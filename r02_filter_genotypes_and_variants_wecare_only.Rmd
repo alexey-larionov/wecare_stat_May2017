@@ -1,0 +1,413 @@
+---
+title: "filter_genotypes_and_variants_wecare_only"
+output: html_document
+---
+
+started: Alexey Larionov, 01Mar2016  
+last updated: Alexey Larionov, 03May2017
+
+# Summary 
+
+The filters are applied in the following order:  
+1) gq > 20  
+2) dp < 500  
+3) call_rate > 0.8  
+4) remove variants with uniform genotypes accross all samples:  
+   - most of those were in NFE only  
+   - some might be created by the above filtering steps  
+
+gq 20 filter is set arbitrary; however, it is consistent with what some othersis do  
+(e.g. see Carson BMC Bioinformatics. 2014 15:125). 
+
+A small number of genotypes (<<1%) was covered too high to be true (up to 1-2k coverage). 
+These are obvious mistakes, and they have been removed too.  Arbitrarily the threshold for 
+max DP was set to 500 (appr. 10 fold of average coverage).
+
+It was discussed with DC whether to filter cases by call rate per case. 
+There was ~3 cases with low coverage (<20) and low call rates (<50%). 
+We desided to keep such cases because their retained genotypes still passed all filters. 
+
+Input data: 343,824 vars x 512 cases  
+Output data: 255,043 vars x 512 cases  
+
+# start_section
+
+```{r start_section}
+
+# Time stamp
+Sys.time()
+
+
+# Folders
+library(knitr)
+base_folder="/analysis/mtgroup_share/users/alexey/wecare_only_stat_05.17"
+opts_knit$set(root.dir = base_folder)
+
+scripts_folder <- paste(base_folder, "scripts", sep="/")
+source_data_folder <- paste(base_folder, "source_data", sep="/")
+interim_data_folder <- paste(base_folder, "interim_data", sep="/")
+results_folder <- paste(base_folder, "results", sep="/")
+
+# Thresholds for genotypes
+min.gq <- 20
+max.dp <- 500
+
+# Variants call ratethreshold
+min.call.rate <- 0.8
+
+```
+
+# load_data
+
+```{r load_data}
+
+load(paste(interim_data_folder, "r01_read_and_clean_data_wecare_only.RData", sep="/"))
+
+```
+
+# check_data
+
+```{r check_data}
+
+dim(gt.mx)
+class(gt.mx)
+gt.mx[1:5,1:5]
+
+dim(gq.mx)
+class(gq.mx)
+gq.mx[1:5,1:5]
+
+dim(dp.mx)
+class(dp.mx)
+dp.mx[1:5,1:5]
+
+dim(covar.df)
+str(covar.df)
+covar.df[1:5,1:5]
+
+dim(samples.df)
+str(samples.df)
+samples.df[1:5,]
+
+dim(demographics.df)
+str(demographics.df)
+demographics.df[1:5,1:5]
+
+dim(phenotypes_update.df)
+str(phenotypes_update.df)
+phenotypes_update.df[1:5,1:5]
+
+dim(BRCA1_BRCA2_PALB2_cases.df)
+str(BRCA1_BRCA2_PALB2_cases.df)
+BRCA1_BRCA2_PALB2_cases.df[1:5,1:5]
+
+dim(vv.df)
+str(vv.df)
+vv.df[1:5,1:5]
+
+dim(kgen.df)
+str(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+str(exac.df)
+exac.df[1:5,1:5]
+
+# Check consistence of rownames and colnames
+
+sum(rownames(gt.mx) != rownames(gq.mx))
+sum(rownames(gt.mx) != rownames(dp.mx))
+sum(rownames(gt.mx) != rownames(vv.df))
+sum(rownames(gt.mx) != rownames(kgen.df))
+sum(rownames(gt.mx) != rownames(exac.df))
+
+sum(colnames(gt.mx) != colnames(gq.mx))
+sum(colnames(gt.mx) != colnames(dp.mx))
+
+```
+
+# explore_data_before_filtering
+
+Genotypes NA rates
+Histogram of call rates per variant  
+Histograms of gq and dp in non-NA genotypes 
+
+```{r explore_data_before_filtering}
+
+# Fraction of NA genotypes before filtering
+sum(is.na(gt.mx))/(nrow(gt.mx)*ncol(gt.mx)) # ~1%
+
+# Call rates per variant before filtering
+x <- ncol(gt.mx)
+y <- apply(gt.mx,1,function(z){1-sum(is.na(z))/x})
+hist(y, breaks=50, xlab=NULL, main="Call rates per variant before genotypes filtering")
+
+# Histogram of gq  before filtering (when gt is not NA !)
+hist(gq.mx[!is.na(gt.mx)], breaks=50, main="Histogram of gq in non-NA genotypes (before filtering)", xlab=NULL)
+
+# Histogram of dp before filtering (when gt is not NA !)
+hist(dp.mx[!is.na(gt.mx)], breaks=50, main="Histogram of dp in non-NA genotypes (before filtering)", xlab=NULL)
+hist(dp.mx[!is.na(gt.mx)], breaks=2500, xlim=c(0,100), main="Histogram of dp in non-NA genotypes (before filtering, 0:100)", xlab=NULL)
+
+# Clean-up
+rm(x,y)
+
+```
+
+# filter_out_low_gq
+
+Put NA to genotypes where gq < 20 : removes ~8% of non-NA genotypes
+
+```{r filter_out_low_gq}
+
+# num of genotypes to be removed
+sum(gq.mx < min.gq, na.rm=TRUE)
+
+# Fraction of non-NA genotypes to be removed
+sum(gq.mx < min.gq, na.rm=TRUE)/sum(!is.na(gq.mx)) # ~6%
+
+# Apply filter (to gt only !)
+NA -> gt.mx[ gq.mx < min.gq ]
+
+# Clean up
+rm(min.gq)
+
+```
+
+# explore_data_after_gq_filtering
+
+```{r explore_data_after_gq_filtering}
+
+dim(gt.mx)
+
+# Fraction of NA genotypes after gq filtering
+sum(is.na(gt.mx))/(dim(gt.mx)[1]*dim(gt.mx)[2]) # ~7%
+
+# Call rates per variant after gq filtering
+x <- ncol(gt.mx)
+y <- apply(gt.mx, 1, function(z){1-sum(is.na(z))/x})
+hist(y, xlab=NULL, main="Histogram of call rates per variant after gq filtering")
+
+# Histogram of gq  after gq filtering (when gt is not NA !)
+hist(gq.mx[!is.na(gt.mx)], xlim=c(0,100), breaks=50, main="Histogram of gq in non NA genotypes (after gq filtering)", xlab=NULL)
+
+# Histogram of dp after gt filtering (when gt is not NA !)
+hist(dp.mx[!is.na(gt.mx)], breaks=50, main="Histogram of dp in non-NA genotypes (after gq filtering)", xlab=NULL)
+hist(dp.mx[!is.na(gt.mx)], xlim=c(0,100), breaks=2500, main="Histogram of dp in non-NA genotypes (after gq filtering, 0:100)", xlab=NULL)
+
+# Clean up
+rm(x, y)
+
+```
+
+# filter_out_high_dp
+
+put NA to genotypes where dp > 500 : removes <<1% of non-NA genotypes
+
+```{r filter_out_high_dp}
+
+# num of genotypes to be removed
+sum(dp.mx > max.dp, na.rm=TRUE)
+
+# Fraction of genotypes to be removed (appr)
+sum(dp.mx > max.dp, na.rm=TRUE)/sum(!is.na(gq.mx)) # <<1%
+
+# Apply filter (to gt only !)
+NA -> gt.mx[ dp.mx > max.dp ]
+
+# Clean up
+rm(max.dp)
+
+```
+
+# explore_data_after_gq_dp_filtering
+
+```{r explore_data_after_gq_dp_filtering}
+
+dim(gt.mx)
+
+# Fraction of NA genotypes after filtering
+sum(is.na(gt.mx))/(dim(gt.mx)[1]*dim(gt.mx)[2]) # ~7%
+
+# Call rates per variant after gq filtering
+x <- ncol(gt.mx)
+y <- apply(gt.mx, 1, function(z){1-sum(is.na(z))/x})
+hist(y, xlab=NULL, main="Call rates per variant after gq+dp filtering")
+
+# Histogram of gq  after gq+dp filtering (when gt is not NA !)
+hist(gq.mx[!is.na(gt.mx)], xlim=c(0,100), breaks=50, main="Histogram of gq in non-NA genotypes (after gq+dp filtering)", xlab=NULL)
+
+# Histogram of dp after gt filtering (when gt is not NA !)
+hist(dp.mx[!is.na(gt.mx)], breaks=50, main="Histogram of dp in non-NA genotypes (after gq+dp filtering)", xlab=NULL)
+hist(dp.mx[!is.na(gt.mx)], xlim=c(0,100), breaks=500, main="Histogram of dp in non-NA genotypes (after gq+dp filtering, 0:100)", xlab=NULL)
+
+# Clean up
+rm(x, y)
+
+```
+
+# filter_variants_by_final_call_rate
+
+Remove variants with call rate < 80% after the gemnotypes filtering: removes ~10% of variants (343,824 -> 307,775)
+
+```{r filter_variants_by_final_call_rate}
+
+# Estimate the proportion of variants to be removed
+x <- ncol(gt.mx)
+y <- apply(gt.mx, 1, function(z){1-sum(is.na(z))/x})
+y[1:7]
+var.retained <- y >= min.call.rate
+sum(var.retained) # 307,775
+1 - sum(var.retained)/nrow(gt.mx) # ~10%
+
+# Remove variants with loaw call rates
+gt.mx <- gt.mx[ var.retained, ]
+dp.mx <- dp.mx[ var.retained, ]
+gq.mx <- gq.mx[ var.retained, ]
+vv.df <- vv.df[ var.retained, ]
+kgen.df <- kgen.df[ var.retained, ]
+exac.df <- exac.df[ var.retained, ]
+
+# Clean-up
+rm(min.call.rate, var.retained, x, y)
+
+```
+
+# remove_variants_with_the_uniform_genotypes_accross_all_samples
+
+Remove 52,732 variants: 307,775 -> 255,043  
+Some of the variants were detected in NFE only  
+In some variants the diverse genotypes were removed during the above filtering  
+
+```{r remove_variants_with_the_uniform_genotypes_accross_all_samples}
+
+# Check that there is no all-NA variants
+non_NA_count.udf <- function(x){sum(!is.na(x))}
+all_NA <- apply(gt.mx, 1, non_NA_count.udf) == 0
+sum(all_NA) # 0
+
+# Function to detect uniform numeric vector
+uniform_vector.udf <- function(x){
+  if(min(x, na.rm=TRUE) == max(x, na.rm=TRUE)){return(TRUE)} else {return(FALSE)}}
+
+# Variants with uniform genotypes accross all samples 
+uniform_genotypes <- apply(gt.mx, 1, uniform_vector.udf)
+summary(uniform_genotypes)
+sum(uniform_genotypes)
+
+# Remove variants with uniform genotypes accross all samples
+gt.mx <- gt.mx[!uniform_genotypes,]
+gq.mx <- gq.mx[!uniform_genotypes,]
+dp.mx <- dp.mx[!uniform_genotypes,]
+
+vv.df <- vv.df[!uniform_genotypes,]
+kgen.df <- kgen.df[!uniform_genotypes,]
+exac.df <- exac.df[!uniform_genotypes,]
+
+dim(gt.mx)
+dim(gq.mx)
+dim(dp.mx)
+dim(vv.df)
+dim(kgen.df)
+dim(exac.df)
+
+# Clean-up
+rm(non_NA_count.udf, all_NA, uniform_vector.udf, uniform_genotypes)
+
+```
+
+# explore_data_after_gq_dp_cr_filtering
+
+```{r explore_data_after_filtering}
+
+dim(gt.mx)
+
+# Fraction of NA genotypes after filtering
+sum(is.na(gt.mx))/(dim(gt.mx)[1]*dim(gt.mx)[2]) # ~3%
+
+# Call rates per variant after filtering
+x <- ncol(gt.mx)
+y <- apply(gt.mx,1,function(z){1-sum(is.na(z))/x})
+hist(y, xlim=c(0,1), breaks=10, xlab=NULL, main="Call rates per variant after gq+dp+cr genotypes filtering")
+
+# Histogram of gq  after filtering (when gt is not NA !)
+hist(gq.mx[!is.na(gt.mx)], xlim=c(0,100), breaks=50, main="Histogram of gq in non-NA genotypes (after gq+dp+cr filtering)", xlab=NULL)
+
+# Histogram of dp  after filtering (when gt is not NA !)
+hist(dp.mx[!is.na(gt.mx)], breaks=50, main="Histogram of dp in non-NA genotypes (after gq+dp+cr filtering)", xlab=NULL)
+hist(dp.mx[!is.na(gt.mx)], breaks=500, xlim=c(0,100), main="Histogram of dp in non-NA genotypes (after gq+dp+cr filtering, 0:100)", xlab=NULL)
+
+# Mean GQ and DP in retained data
+mean(gq.mx, na.rm=TRUE)
+mean(dp.mx, na.rm=TRUE)
+
+# Clean-up
+rm(x, y, gq.mx, dp.mx)
+
+```
+
+# data_summary
+
+```{r data_summary}
+
+dim(gt.mx)
+class(gt.mx)
+gt.mx[1:5,1:5]
+
+dim(covar.df)
+str(covar.df)
+covar.df[1:5,1:5]
+
+dim(samples.df)
+str(samples.df)
+samples.df[1:5,]
+
+dim(demographics.df)
+str(demographics.df)
+demographics.df[1:5,1:5]
+
+dim(phenotypes_update.df)
+str(phenotypes_update.df)
+phenotypes_update.df[1:5,1:5]
+
+dim(BRCA1_BRCA2_PALB2_cases.df)
+str(BRCA1_BRCA2_PALB2_cases.df)
+BRCA1_BRCA2_PALB2_cases.df[1:5,1:5]
+
+dim(vv.df)
+str(vv.df)
+vv.df[1:5,1:5]
+
+dim(kgen.df)
+str(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+str(exac.df)
+exac.df[1:5,1:5]
+
+# Check consistence of rownames
+sum(rownames(gt.mx) != rownames(vv.df))
+sum(rownames(gt.mx) != rownames(kgen.df))
+sum(rownames(gt.mx) != rownames(exac.df))
+
+```
+
+# save_data
+
+```{r save_data}
+
+save.image(paste(interim_data_folder, "r02_filter_genotypes_and_variants_wecare_only.RData", sep="/"))
+
+```
+
+# final_section
+
+```{r final_section}
+
+ls()
+sessionInfo()
+Sys.time()
+
+```
+

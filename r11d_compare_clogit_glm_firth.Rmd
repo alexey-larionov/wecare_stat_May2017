@@ -1,0 +1,315 @@
+---
+title: "compare_clogit_glm_and_firth"
+output: html_document
+---
+
+started: Alexey Larionov, 28Apr2017  
+last updated: Alexey Larionov, 03May2017
+
+# Summary
+
+Compare clogit, glm and Firth analyses on SKAT-style weighted and aggregated data  
+
+- Read and check the data  
+- Plot p-values obtained by different methods against each other  
+
+# Todo:  
+
+- Adk DC about other metrics for models comparison ?  
+- Should we select "robust" variants on the basis of concordance between clogit and glm?  
+- Similarly: on the basis of concordance between clogit and SKAT?  
+
+Possible variants sub-groups:  
+- looking at "standard" only in clogit  
+- looking at "succeeded" only in glm(M)  
+- looking at anova only in Firth  
+- excluding multiallelic, inverted etc  
+
+# start_section
+
+```{r start_section}
+
+# Start time
+Sys.time()
+
+# Folders
+base_folder="/analysis/mtgroup_share/users/alexey/wecare_only_stat_05.17"
+setwd(base_folder)
+scripts_folder <- "scripts"
+source_data_folder <- "source_data"
+interim_data_folder <- "interim_data"
+results_folder <- "results"
+
+```
+
+# load_data
+
+Keep only relevant tables  
+
+```{r load_data}
+
+load(paste(interim_data_folder, "r11a_clogit_wecare_only.RData", sep="/"))
+rm(genotypes.mx, genotypes_inv_imp_wt.mx, genes_aggr_data.mx, genes_aggr_info.df, 
+   kgen.df, exac.df, variants.df, phenotypes.df)
+
+load(paste(interim_data_folder, "r11b_glm_wecare_only.RData", sep="/"))
+rm(genotypes.mx, genotypes_inv_imp_wt.mx, genes_aggr_data.mx, genes_aggr_info.df, 
+   kgen.df, exac.df, variants.df, phenotypes.df)
+
+load(paste(interim_data_folder, "r11c_firth_wecare_only.RData", sep="/"))
+rm(genotypes.mx, genotypes_inv_imp_wt.mx, genes_aggr_data.mx, genes_aggr_info.df, 
+   kgen.df, exac.df, variants.df, phenotypes.df)
+
+```
+
+# check_data
+
+```{r check_data}
+
+ls()
+
+dim(genes_aggr_clogit.df)
+str(genes_aggr_clogit.df)
+genes_aggr_clogit.df[1:5,1:5]
+
+dim(genes_aggr_glm.df)
+str(genes_aggr_glm.df)
+genes_aggr_glm.df[1:5,1:5]
+
+dim(genes_aggr_glm_M.df)
+str(genes_aggr_glm_M.df)
+genes_aggr_glm_M.df[1:5,1:5]
+
+dim(genes_aggr_firth.df)
+str(genes_aggr_firth.df)
+genes_aggr_firth.df[1:5,1:5]
+
+dim(genes_aggr_firth_M.df)
+str(genes_aggr_firth_M.df)
+genes_aggr_firth_M.df[1:5,1:5]
+
+sum(rownames(genes_aggr_clogit.df) != rownames(genes_aggr_glm.df))
+sum(rownames(genes_aggr_clogit.df) != rownames(genes_aggr_glm_M.df))
+
+sum(rownames(genes_aggr_clogit.df) != rownames(genes_aggr_firth.df))
+sum(rownames(genes_aggr_clogit.df) != rownames(genes_aggr_firth_M.df))
+
+```
+
+# clogit_vs_glm
+
+```{r clogit_vs_glm}
+
+# Get p-values
+
+p_clogit_lrt <- genes_aggr_clogit.df$p_clogit_lrt
+n_clogit_lrt <- sum(!is.na(p_clogit_lrt))
+
+p_glm_lrt <- genes_aggr_glm.df$p_glm_lrt
+n_glm_lrt <- sum(!is.na(p_glm_lrt))
+
+# Make plots
+
+main=paste("clogit vs glm\n",min(n_clogit_lrt, n_glm_lrt),"genes")
+plot(p_clogit_lrt, p_glm_lrt, main=main)
+
+main=paste("clogit vs glm (log10 scale)\n",min(n_clogit_lrt, n_glm_lrt),"genes")
+plot(log(p_clogit_lrt, 10),log(p_glm_lrt, 10), main=main)
+
+# Calculate correlation
+cor.test(p_clogit_lrt, p_glm_lrt)
+
+# Clean-up
+rm(p_clogit_lrt, p_glm_lrt, n_clogit_lrt, n_glm_lrt, main)
+
+```
+
+# clogit_vs_glm_M
+
+```{r clogit_vs_glm_M}
+
+# Get p-values
+
+p_clogit_lrt <- genes_aggr_clogit.df$p_clogit_lrt
+n_clogit_lrt <- sum(!is.na(p_clogit_lrt))
+
+p_glm_M_lrt <- genes_aggr_glm_M.df$p_glm_lrt
+n_glm_M_lrt <- sum(!is.na(p_glm_M_lrt))
+
+# Make plots
+
+main=paste("clogit vs glm M\n",min(n_clogit_lrt, n_glm_M_lrt),"genes")
+plot(p_clogit_lrt, p_glm_M_lrt, main=main)
+
+main=paste("clogit vs glm M (log10 scale)\n",min(n_clogit_lrt, n_glm_M_lrt),"genes")
+plot(log(p_clogit_lrt, 10),log(p_glm_M_lrt, 10), main=main)
+
+# Calculate correlation
+cor.test(p_clogit_lrt, p_glm_M_lrt)
+
+# Clean-up
+rm(p_clogit_lrt, p_glm_M_lrt, n_clogit_lrt, n_glm_M_lrt, main)
+
+```
+
+# clogit_vs_firth
+
+```{r clogit_vs_firth}
+
+# Get p-values
+
+p_clogit_lrt <- genes_aggr_clogit.df$p_clogit_lrt
+n_clogit_lrt <- sum(!is.na(p_clogit_lrt))
+
+p_firth_pl <- genes_aggr_firth.df$p_firth_pl
+n_firth_pl <- sum(!is.na(p_firth_pl))
+
+# Make plots
+
+main=paste("clogit vs Firth\n",min(n_clogit_lrt, n_firth_pl),"genes")
+plot(p_clogit_lrt, p_firth_pl, main=main)
+
+main=paste("clogit vs Firth (log10 scale)\n",min(n_clogit_lrt, n_firth_pl),"genes")
+plot(log(p_clogit_lrt, 10),log(p_firth_pl, 10), main=main)
+
+# Calculate correlation
+cor.test(p_clogit_lrt, p_firth_pl)
+
+# Clean-up
+rm(p_clogit_lrt, p_firth_pl, n_clogit_lrt, n_firth_pl, main)
+
+```
+
+# clogit_vs_firth_M
+
+```{r clogit_vs_firth_M}
+
+# Get p-values
+
+p_clogit_lrt <- genes_aggr_clogit.df$p_clogit_lrt
+n_clogit_lrt <- sum(!is.na(p_clogit_lrt))
+
+p_firth_pl_M <- genes_aggr_firth_M.df$p_firth_pl
+n_firth_pl_M <- sum(!is.na(p_firth_pl_M))
+
+# Make plots
+
+main=paste("clogit vs Firth M\n",min(n_clogit_lrt, n_firth_pl_M),"genes")
+plot(p_clogit_lrt, p_firth_pl_M, main=main)
+
+main=paste("clogit vs Firth M (log10 scale)\n",min(n_clogit_lrt, n_firth_pl_M),"genes")
+plot(log(p_clogit_lrt, 10),log(p_firth_pl_M, 10), main=main)
+
+# Calculate correlation
+cor.test(p_clogit_lrt, p_firth_pl_M)
+
+# Clean-up
+rm(p_clogit_lrt, p_firth_pl_M, n_clogit_lrt, n_firth_pl_M, main)
+
+```
+
+# glm_vs_firth
+
+```{r glm_vs_firth}
+
+# Get p-values
+
+p_glm_lrt <- genes_aggr_glm.df$p_glm_lrt
+n_glm_lrt <- sum(!is.na(p_glm_lrt))
+
+p_firth_pl <- genes_aggr_firth.df$p_firth_pl
+n_firth_pl <- sum(!is.na(p_firth_pl))
+
+# Make plots
+
+main=paste("glm vs Firth\n",min(n_glm_lrt, n_firth_pl),"genes")
+plot(p_glm_lrt, p_firth_pl, main=main)
+
+main=paste("glm vs Firth (log10 scale)\n",min(n_glm_lrt, n_firth_pl),"genes")
+plot(log(p_glm_lrt, 10),log(p_firth_pl, 10), main=main)
+
+# Calculate correlation
+cor.test(p_glm_lrt, p_firth_pl)
+
+# Clean-up
+rm(p_glm_lrt, p_firth_pl, n_glm_lrt, n_firth_pl, main)
+
+```
+
+# glm_M_vs_firth_M
+
+```{r glm_M_vs_firth_M}
+
+# Get p-values
+
+p_glm_lrt_M <- genes_aggr_glm_M.df$p_glm_lrt
+n_glm_lrt_M <- sum(!is.na(p_glm_lrt_M))
+
+p_firth_pl_M <- genes_aggr_firth_M.df$p_firth_pl
+n_firth_pl_M <- sum(!is.na(p_firth_pl_M))
+
+# Make plots
+
+main=paste("glm M vs Firth M\n",min(n_glm_lrt_M, n_firth_pl_M),"genes")
+plot(p_glm_lrt_M, p_firth_pl_M, main=main)
+
+main=paste("glm M vs Firth M (log10 scale)\n",min(n_glm_lrt_M, n_firth_pl_M),"genes")
+plot(log(p_glm_lrt_M, 10),log(p_firth_pl_M, 10), main=main)
+
+# Calculate correlation
+cor.test(p_glm_lrt_M, p_firth_pl_M)
+
+# Clean-up
+rm(p_glm_lrt_M, p_firth_pl_M, n_glm_lrt_M, n_firth_pl_M, main)
+
+```
+
+# data_summary
+
+```{r data_summary}
+
+dim(genes_aggr_clogit.df)
+str(genes_aggr_clogit.df)
+genes_aggr_clogit.df[1:5,1:5]
+
+dim(genes_aggr_glm.df)
+str(genes_aggr_glm.df)
+genes_aggr_glm.df[1:5,1:5]
+
+dim(genes_aggr_glm_M.df)
+str(genes_aggr_glm_M.df)
+genes_aggr_glm_M.df[1:5,1:5]
+
+dim(genes_aggr_firth.df)
+str(genes_aggr_firth.df)
+genes_aggr_firth.df[1:5,1:5]
+
+dim(genes_aggr_firth_M.df)
+str(genes_aggr_firth_M.df)
+genes_aggr_firth_M.df[1:5,1:5]
+
+sum(rownames(genes_aggr_clogit.df) != rownames(genes_aggr_glm.df))
+sum(rownames(genes_aggr_clogit.df) != rownames(genes_aggr_glm_M.df))
+
+sum(rownames(genes_aggr_clogit.df) != rownames(genes_aggr_firth.df))
+sum(rownames(genes_aggr_clogit.df) != rownames(genes_aggr_firth_M.df))
+
+```
+
+# save_data
+
+```{r save_data}
+
+save.image(paste(interim_data_folder, "r11d_compare_clogit_glm_firth_wecare_only.RData", sep="/"))
+
+```
+
+# final_section
+
+```{r final_section}
+
+ls()
+sessionInfo()
+Sys.time()
+
+```

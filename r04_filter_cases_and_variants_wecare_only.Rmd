@@ -1,0 +1,273 @@
+---
+title: "filter_cases_and_variants_wecare_only"
+output: html_document
+---
+
+started: Alexey Larionov, 01Mar2016  
+last updated: Alexey Larionov, 03May2017
+
+# Summary
+
+This script performs the following steps:  
+
+- removes cases, which failed (sequencing) filters
+
+- removes variants absent in the retained cases  
+
+- explores the remaining data  
+
+Exac and kgen include only variants that were biallelic in exac/ kgen respectively  
+
+Input data: 255,043 vars x 512 cases  
+Output data: 247,059 vars x 480 cases (245 UBC and 235 CBC)  
+
+# start_section
+
+```{r start_section}
+
+# Time stamp
+Sys.time()
+
+
+# Folders
+library(knitr)
+base_folder="/analysis/mtgroup_share/users/alexey/wecare_only_stat_05.17"
+opts_knit$set(root.dir = base_folder)
+
+scripts_folder <- paste(base_folder, "scripts", sep="/")
+source_data_folder <- paste(base_folder, "source_data", sep="/")
+interim_data_folder <- paste(base_folder, "interim_data", sep="/")
+results_folder <- paste(base_folder, "results", sep="/")
+
+# Required libraries
+library(ggplot2)
+library(VennDiagram)
+
+```
+
+# load_data
+
+```{r load_data}
+
+load(paste(interim_data_folder, "r03_consolidate_phenotype_data_wecare_only.RData", sep="/"))
+
+```
+
+# check_data
+
+```{r check_data}
+
+ls()
+
+dim(gt.mx)
+class(gt.mx)
+gt.mx[1:5,1:5]
+
+dim(phenotypes.df)
+str(phenotypes.df)
+phenotypes.df[1:5,1:5]
+
+dim(variants.df)
+colnames(variants.df)
+variants.df[1:5,1:5]
+
+dim(kgen.df)
+colnames(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+colnames(exac.df)
+exac.df[1:5,1:5]
+
+# Check consistency of rownames
+sum(rownames(gt.mx) != rownames(variants.df))
+sum(rownames(gt.mx) != rownames(kgen.df))
+sum(rownames(gt.mx) != rownames(exac.df))
+
+```
+
+# remove_wecare_cases_failed_filters
+Remove 32 cases: 512 -> 480  
+This step also syncronises the rows (cases) in phenotypes with columns (cases) in genotypes.  
+
+```{r remove_wecare_cases_failed_filters}
+
+pf_cases <- phenotypes.df$filter == "pass"
+sum(pf_cases)
+
+phenotypes.df <- phenotypes.df[pf_cases,]
+dim(phenotypes.df)
+
+retained_cases <- phenotypes.df$wes_id
+
+gt.mx <- gt.mx[,retained_cases]
+dim(gt.mx)
+
+sum(rownames(phenotypes.df) != colnames(gt.mx))
+
+rm(pf_cases, retained_cases)
+
+```
+
+# remove_variants_with_the_uniform_genotypes_accross_all_samples
+
+Remove 7,984 variants: 255,043 -> 247,059  
+
+```{r remove_variants_with_the_uniform_genotypes_accross_all_samples}
+
+# Check that there is no all-NA variants
+non_NA_count.udf <- function(x){sum(!is.na(x))}
+all_NA <- apply(gt.mx, 1, non_NA_count.udf) == 0
+sum(all_NA) # 0
+
+# Function to detect uniform numeric vector
+uniform_vector.udf <- function(x){
+  if(min(x, na.rm=TRUE) == max(x, na.rm=TRUE)){return(TRUE)} else {return(FALSE)}}
+
+# Variants with uniform genotypes accross all samples 
+uniform_genotypes <- apply(gt.mx, 1, uniform_vector.udf)
+summary(uniform_genotypes)
+sum(uniform_genotypes)
+
+# Remove variants with uniform genotypes accross all samples
+gt.mx <- gt.mx[!uniform_genotypes,]
+variants.df <- variants.df[!uniform_genotypes,]
+kgen.df <- kgen.df[!uniform_genotypes,]
+exac.df <- exac.df[!uniform_genotypes,]
+
+dim(gt.mx)
+dim(variants.df)
+dim(kgen.df)
+dim(exac.df)
+
+# Clean-up
+rm(non_NA_count.udf, all_NA, uniform_vector.udf, uniform_genotypes)
+
+```
+
+# compare_variants_in_cbc_and_ubc
+
+```{r compare_variants_in_nfe_and_wecare}
+
+cbc_ids <- phenotypes.df[phenotypes.df$cc==1,"wes_id"]
+length(cbc_ids)
+
+ubc_ids <- phenotypes.df[phenotypes.df$cc==0,"wes_id"]
+length(ubc_ids)
+
+cbc.mx <- gt.mx[,cbc_ids]
+ubc.mx <- gt.mx[,ubc_ids]
+
+cbc_variants <- apply(cbc.mx, 1, sum, na.rm=TRUE) > 0 
+sum(cbc_variants) # 178,255
+
+ubc_variants <- apply(ubc.mx, 1, sum, na.rm=TRUE) > 0 
+sum(ubc_variants) # 182,769
+
+overlap_variants <- sum(cbc_variants) + sum(ubc_variants) - nrow(variants.df)
+overlap_variants # 113,965
+
+# http://stackoverflow.com/questions/8713994/venn-diagram-proportional-and-color-shading-with-semi-transparency 
+grid.newpage();
+draw.pairwise.venn(sum(cbc_variants), sum(ubc_variants), overlap_variants, 
+                   category=c(paste("cbc\n",sum(cbc_variants)),
+                              paste("ubc\n",sum(ubc_variants))), 
+                   fill = c("red", "green"), alpha = c(0.3, 0.3), 
+                   cex = 2, cat.fontface = 4, fontfamily =3)
+
+rm(cbc_ids, ubc_ids, cbc_variants, ubc_variants, overlap_variants)
+
+```
+
+# compare_cbc_and_ubc_na_rates
+
+```{r compare_cbc_and_ubc_na_rates}
+
+# NA rates in genotypes
+gt_cbc.na <- 100 * sum(is.na(cbc.mx)) / (nrow(cbc.mx) * ncol(cbc.mx)) 
+gt_cbc.na # ~3,15%
+gt_ubc.na <- 100 * sum(is.na(ubc.mx)) / (nrow(ubc.mx) * ncol(ubc.mx))
+gt_ubc.na # ~2.81%
+
+# Summary table
+na_summary.df <- data.frame(c("ubc", "cbc"),c(gt_ubc.na, gt_cbc.na))
+colnames(na_summary.df) <- c("dataset", "value")
+na_summary.df
+
+# Plot
+ggplot(na_summary.df, aes(dataset, value)) +
+  geom_bar(aes(fill = dataset), stat="identity") + 
+  ggtitle("NA rates")
+
+# Clean-up
+rm(gt_cbc.na, gt_ubc.na, na_summary.df, cbc.mx, ubc.mx)
+
+```
+
+# rename_gt_table
+
+```{r rename_gt_table}
+
+genotypes.mx <- gt.mx
+
+rm(gt.mx)
+
+```
+
+# data_summary
+
+```{r data_summary}
+
+ls()
+
+dim(genotypes.mx)
+class(genotypes.mx)
+genotypes.mx[1:5,1:5]
+
+dim(phenotypes.df)
+str(phenotypes.df)
+phenotypes.df[1:5,1:5]
+
+dim(variants.df)
+colnames(variants.df)
+variants.df[1:5,1:5]
+
+dim(kgen.df)
+colnames(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+colnames(exac.df)
+exac.df[1:5,1:5]
+
+# Check consistency of colnames and rownames
+sum(colnames(genotypes.mx) != rownames(phenotypes.df))
+
+sum(rownames(genotypes.mx) != rownames(variants.df))
+sum(rownames(genotypes.mx) != rownames(kgen.df))
+sum(rownames(genotypes.mx) != rownames(exac.df))
+
+```
+
+# save_data
+
+```{r save_data}
+
+# Clean folders names
+rm(scripts_folder, source_data_folder, interim_data_folder, results_folder)
+
+# Save data
+
+save.image(paste(interim_data_folder, "r04_filter_cases_and_variants_wecare_only.RData", sep="/"))
+
+```
+
+# final_section
+
+```{r final_section}
+
+ls()
+sessionInfo()
+Sys.time()
+
+```

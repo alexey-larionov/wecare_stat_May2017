@@ -1,0 +1,406 @@
+---
+title: "calculate_eigenvectors_kgen50_wecare"
+output: html_document
+---
+
+started: Alexey Larionov, 2016  
+last updated: Alexey Larionov, 03May2017
+
+# Summary
+
+Eigenvectors are calculated using **40,924** common variants only:  
+5% < AF  < 95% in each of the compared datasets (WECARE and NFE and kgen50)  
+
+Overall, eigenvectors are calculated for 3 datasets:  
+
+- wecare-only  
+- kgen50-wecare (using overlap wecare, nfe and kgen50)  
+- wecare-nfe-kgen2500 (using overlap wecare and nfe + possibly kgen2500)  
+
+This script deals with kgen50-wecare dataset 
+
+Requires f01_calculate_eigenvectors.R  
+
+Suggests two eigenvectors' outliers (> 6 SdtDev on many EV): P5_E09 and P6_D05  
+
+Input data: 82,799 vars x 530 cases (480 wecare + 50 kgen)  
+Output data: 40,924 vars x 530 cases (480 wecare + 50 kgen)  
+
+# start_section
+
+```{r start_section}
+
+# Time stamp
+Sys.time()
+
+# Folders
+base_folder="/analysis/mtgroup_share/users/alexey/wecare_only_stat_05.17"
+setwd(base_folder)
+scripts_folder <- "scripts"
+source_data_folder <- "source_data"
+interim_data_folder <- "interim_data"
+results_folder <- "results"
+
+# Required libraries
+library(ggplot2)
+library(plotly)
+
+```
+
+# load_data
+
+```{r load_data}
+
+load(paste(interim_data_folder, "r06a_add_kgen50_to_wecare.RData", sep="/"))
+
+```
+
+# check_data
+
+```{r check_data}
+
+ls()
+
+dim(wecare_kgen50_gt.mx)
+class(wecare_kgen50_gt.mx)
+wecare_kgen50_gt.mx[1:5, 1:5]
+
+dim(wecare_kgen50_groups.df)
+str(wecare_kgen50_groups.df)
+wecare_kgen50_groups.df[1:5, ]
+
+dim(wecare_kgen50_vars.df)
+str(wecare_kgen50_vars.df)
+wecare_kgen50_vars.df[1:5,1:5]
+
+# Check consistence of rownames and colnames
+sum(rownames(wecare_kgen50_gt.mx) != rownames(wecare_kgen50_vars.df))
+sum(colnames(wecare_kgen50_gt.mx) != rownames(wecare_kgen50_groups.df))
+
+```
+
+# check_for_variants_with_uniform_genotypes_accross_all_wecare_nfe_samples
+
+There should be no such variants because they were removed earlier,  
+when generated wecare-nfe and kgen50 datasets
+
+```{r check_for_variants_with_uniform_genotypes_accross_all_wecare_nfe_samples}
+
+# Check that there is no all-NA variants 
+# (this is assumed for some downstream calculations)
+non_NA_count.udf <- function(x){sum(!is.na(x))}
+all_NA <- apply(wecare_kgen50_gt.mx, 1, non_NA_count.udf) == 0
+sum(all_NA) # 0
+
+# Function to detect uniform numeric vector
+uniform_vector.udf <- function(x){
+  if(min(x, na.rm=TRUE) == max(x, na.rm=TRUE)){return(TRUE)} else {return(FALSE)}}
+
+# Variants with uniform genotypes accross all samples 
+uniform_genotypes <- apply(wecare_kgen50_gt.mx, 1, uniform_vector.udf)
+summary(uniform_genotypes)
+sum(uniform_genotypes) # 0
+
+# Clean-up
+rm(non_NA_count.udf, all_NA, uniform_vector.udf, uniform_genotypes)
+
+```
+
+# recalculate_total_AFs
+
+Used for selecting variants for eigenvectors computation.  
+Could be recalculated later after exclusion of eigenvectors outliers.
+
+```{r recalculate_AFs}
+
+# Function to calculate AN
+get_allele_number.udf <- function(x){2*sum(!is.na(x))}
+
+# --- Calculate total AFs --- #
+
+# Rename AF fields in the variants table
+vars_colnames <- colnames(wecare_kgen50_vars.df)
+"ac_wecare" -> vars_colnames[ vars_colnames == "ac_all" ]
+"an_wecare" -> vars_colnames[ vars_colnames == "an_all" ]
+"af_wecare" -> vars_colnames[ vars_colnames == "af_all" ]
+vars_colnames -> colnames(wecare_kgen50_vars.df)
+
+# Calculate new AFs
+ac_all <- apply(wecare_kgen50_gt.mx, 1, sum, na.rm=TRUE)
+an_all <- apply(wecare_kgen50_gt.mx, 1, get_allele_number.udf)
+af_all <- ac_all/an_all
+
+# Ceck new AFs 
+# (note that uniform variants were excluded)
+ac_all[1:10]
+an_all[1:10]
+af_all[1:10]
+
+min(ac_all)
+min(an_all)
+min(af_all)
+
+max(ac_all)
+max(an_all)
+max(af_all)
+
+# Add new AFs to the variants table
+wecare_kgen50_vars.df <- cbind(wecare_kgen50_vars.df, ac_all, an_all, af_all)
+
+# Clean-up()
+rm(get_allele_number.udf, vars_colnames, ac_all, an_all, af_all)
+
+```
+
+# calculate_kgen50_AFs
+
+```{r calculate_kgen50_AFs}
+
+# Function to calculate AN
+get_allele_number.udf <- function(x){2*sum(!is.na(x))}
+
+# Prepare genotypes table
+kgen50_cases <- wecare_kgen50_groups.df[,"group"] != "CBC" & wecare_kgen50_groups.df[,"group"] != "UBC"
+sum(kgen50_cases) # 50
+kgen50_genotypes.mx <- wecare_kgen50_gt.mx[,kgen50_cases]
+dim(kgen50_genotypes.mx)
+
+# Calculate ubc ac, an and af
+ac_kgen50 <- apply(kgen50_genotypes.mx, 1, sum, na.rm=TRUE)
+an_kgen50 <- apply(kgen50_genotypes.mx, 1, get_allele_number.udf)
+af_kgen50 <- ac_kgen50/an_kgen50
+
+# Add updated AFs to wecare_variants.df
+wecare_kgen50_vars.df <- cbind(wecare_kgen50_vars.df, ac_kgen50, an_kgen50, af_kgen50)
+
+# Clean-up
+rm(get_allele_number.udf, kgen50_cases, kgen50_genotypes.mx, ac_kgen50, an_kgen50, af_kgen50)
+
+```
+
+# calculate_eigenvectors
+
+Only common variants will be used for eigenvectors calculation.  
+
+Note exclusion on both sides: low- and high- AFs:  
+- Low AFs remove rare variants with common allele in reference genome  
+- Hight AFs remove rare variants with common allele in reference genome  
+
+```{r calculate_eigenvectors}
+
+# --- Make subset of data for eigenvectors calculation --- #
+
+# Select kgen50_wecare-nfe overlap variants
+kgen50_common <- wecare_kgen50_vars.df$af_kgen50 > 0.05 & wecare_kgen50_vars.df$af_kgen50 < 0.95
+wecare_common <- wecare_kgen50_vars.df$af_wecare > 0.05 & wecare_kgen50_vars.df$af_wecare < 0.95
+
+sum(kgen50_common) # 48,045
+sum(wecare_common) # 45,769
+
+common_overlap_vars <- kgen50_common & wecare_common
+sum(common_overlap_vars) # 40,924
+
+# Select common variants
+min(wecare_kgen50_vars.df$af_all[common_overlap_vars]) # ~0.05
+max(wecare_kgen50_vars.df$af_all[common_overlap_vars]) # ~0.95
+
+# Make the subset of data
+common_overlap_genotypes.mx <- wecare_kgen50_gt.mx[common_overlap_vars,]
+dim(common_overlap_genotypes.mx)
+common_overlap_genotypes.mx[1:5,1:5]
+
+# --- Calculate eigenvectors --- #
+
+source("f01_calculate_eigenvectors.R")
+wecare_kgen50.eigen <- normalise_and_calculate_eigenvectors.udf(common_overlap_genotypes.mx)
+
+# Clean-up
+rm(wecare_common, kgen50_common, common_overlap_vars, 
+   normalise_and_calculate_eigenvectors.udf, common_overlap_genotypes.mx)
+
+```
+
+# plot_eigenvectors
+
+```{r plot_eigenvectors}
+
+# --- Prepare data for plotting --- #
+
+eigenvectors.mx <- as.data.frame(wecare_kgen50.eigen$vectors) # eigenvectors in columns
+
+# Make sure the groups table is in sync with gt table
+sum(wecare_kgen50_groups.df[,"case"] != colnames(wecare_kgen50_gt.mx))
+
+# Prepare cases IDs and labels
+cases_IDs <- wecare_kgen50_groups.df[,"case"]
+cases_labels <- as.factor(wecare_kgen50_groups.df[,"group"])
+cases_labels <- factor(cases_labels, levels=c("CBC", "UBC", "AFR", "AMR", "SAS", "EAS", "EUR"))
+# plotly layers dots in order of the labels' factor levels. 
+# Thus I made EUR above NFE and WECARE
+# By default the order would be sort(unique(..))
+
+# make the dataframe
+data2plot.df <- cbind(cases_IDs, cases_labels, eigenvectors.mx[,1:5])
+colnames(data2plot.df) <- c("sample", "group", "ev1", "ev2", "ev3", "ev4", "ev5")
+
+# Prepare colour scale
+colours <- c("EUR" = "BLUE", "AFR" = "BROWN", "AMR" = "GREEN", "SAS" = "BLACK", "EAS" = "MAGENTA", "UBC" = "PINK", "CBC" = "RED")
+userColourScale <- scale_colour_manual(values=colours)
+
+# --- Plot eig1 vs eig2 --- #
+
+g <- ggplot(data2plot.df, aes(-ev2, -ev1)) +
+  geom_point(aes(col=group, text = cases_IDs)) + 
+  labs(title="wecare-nfe-kgen50<br>common overlapped variants (40,924 x 530)", 
+       x = "-eigenvector2", y ="-eigenvector1") +
+  userColourScale
+
+ggplotly(g) # Coloured dots are layered in order of the group's factor's levels
+
+# --- Plot eig2 vs eig3 --- #
+
+g <- ggplot(data2plot.df, aes(-ev2, ev3)) +
+  geom_point(aes(colour=group, fill=group, text = cases_IDs)) + 
+  labs(title="wecare-nfe-kgen50<br>common overlapped variants (40,924 x 530)", x ="-eigenvector2", y = "eigenvector3") +
+  userColourScale
+
+ggplotly(g)
+
+# --- Plot eig3 vs eig4 --- #
+
+g <- ggplot(data2plot.df, aes(ev3, ev4)) +
+  geom_point(aes(colour=group, fill=group, text = cases_IDs)) + 
+  labs(title="wecare-nfe-kgen50<br>common overlapped variants (40,924 x 530)", x ="eigenvector3", y = "eigenvector4") +
+  userColourScale
+
+ggplotly(g)
+
+# --- Plot eig4 vs eig5 --- #
+
+g <- ggplot(data2plot.df, aes(ev4, ev5)) +
+  geom_point(aes(colour=group, fill=group, text = cases_IDs)) + 
+  labs(title="wecare-nfe-kgen50<br>common overlapped variants (40,924 x 530)", x ="eigenvector4", y = "eigenvector5") +
+  userColourScale
+
+ggplotly(g)
+
+# --- Clean-up --- #
+
+rm(eigenvectors.mx, colours, g, data2plot.df, cases_IDs, cases_labels, userColourScale)
+
+```
+
+# calculate_wecare_outliers
+
+Explore 6 standard deviations in 5 top eigenvectors  
+
+```{r calculate_wecare_outliers}
+
+eigenvectors.mx <- as.data.frame(wecare_kgen50.eigen$vectors) # eigenvectors in columns, samples in rows
+
+
+# Prepare genotypes table
+wecare_samples <- wecare_kgen50_groups.df[,"group"] == "CBC" | wecare_kgen50_groups.df[,"group"] == "UBC"
+sum(wecare_samples) # 480
+wecare_samples_ids <- colnames(wecare_kgen50_gt.mx)[wecare_samples]
+wecare_eigenvectors.mx <- eigenvectors.mx[wecare_samples,]
+
+ev1 <- wecare_eigenvectors.mx[,1]
+ev1.positive_outliers <- ev1 > mean(ev1) + 6 * sd(ev1)
+ev1.negative_outliers <- ev1 < mean(ev1) - 6 * sd(ev1)
+sum(ev1.positive_outliers)
+sum(ev1.negative_outliers)
+
+wecare_samples_ids[ev1.positive_outliers]
+wecare_samples_ids[ev1.negative_outliers] # P5_E09, P6_D05
+
+ev2 <- wecare_eigenvectors.mx[,2]
+ev2.positive_outliers <- ev2 > mean(ev2) + 6 * sd(ev2)
+ev2.negative_outliers <- ev2 < mean(ev2) - 6 * sd(ev2)
+sum(ev2.positive_outliers)
+sum(ev2.negative_outliers)
+
+wecare_samples_ids[ev2.positive_outliers]
+wecare_samples_ids[ev2.negative_outliers] # P5_E09, P6_D05
+
+ev3 <- wecare_eigenvectors.mx[,3]
+ev3.positive_outliers <- ev3 > mean(ev3) + 6 * sd(ev3)
+ev3.negative_outliers <- ev3 < mean(ev3) - 6 * sd(ev3)
+sum(ev3.positive_outliers)
+sum(ev3.negative_outliers)
+
+wecare_samples_ids[ev3.positive_outliers]
+wecare_samples_ids[ev3.negative_outliers]
+
+ev4 <- wecare_eigenvectors.mx[,4]
+ev4.positive_outliers <- ev4 > mean(ev4) + 6 * sd(ev4)
+ev4.negative_outliers <- ev4 < mean(ev4) - 6 * sd(ev4)
+sum(ev4.positive_outliers)
+sum(ev4.negative_outliers)
+
+wecare_samples_ids[ev4.positive_outliers]
+wecare_samples_ids[ev4.negative_outliers]
+
+ev5 <- wecare_eigenvectors.mx[,5]
+ev5.positive_outliers <- ev5 > mean(ev5) + 6 * sd(ev5)
+ev5.negative_outliers <- ev5 < mean(ev5) - 6 * sd(ev5)
+sum(ev5.positive_outliers)
+sum(ev5.negative_outliers)
+
+wecare_samples_ids[ev5.positive_outliers]
+wecare_samples_ids[ev5.negative_outliers]
+
+# Clean-up
+rm(wecare_samples, wecare_samples_ids, 
+   eigenvectors.mx, wecare_eigenvectors.mx, 
+   ev1, ev1.positive_outliers, ev1.negative_outliers, 
+   ev2, ev2.positive_outliers, ev2.negative_outliers, 
+   ev3, ev3.positive_outliers, ev3.negative_outliers,
+   ev4, ev4.positive_outliers, ev4.negative_outliers,
+   ev5, ev5.positive_outliers, ev5.negative_outliers)
+
+```
+
+# data_summary
+
+```{r data_summary}
+
+ls()
+
+dim(wecare_kgen50_gt.mx)
+class(wecare_kgen50_gt.mx)
+wecare_kgen50_gt.mx[1:5,1:5]
+
+dim(wecare_kgen50_vars.df)
+str(wecare_kgen50_vars.df)
+wecare_kgen50_vars.df[1:5,1:5]
+
+dim(wecare_kgen50_groups.df)
+colnames(wecare_kgen50_groups.df)
+wecare_kgen50_groups.df[1:5,]
+
+str(wecare.eigen)
+str(wecare_kgen50.eigen)
+
+sum(rownames(wecare_kgen50_gt.mx) != rownames(wecare_kgen50_vars.df))
+sum(colnames(wecare_kgen50_gt.mx) != rownames(wecare_kgen50_groups.df))
+
+```
+
+# save_data
+
+```{r save_data}
+
+save.image(paste(interim_data_folder, "r06b_calculate_egenvectors_kgen50_wecare.RData", sep="/"))
+
+```
+
+# final_section
+
+```{r final_section}
+
+ls()
+sessionInfo()
+Sys.time()
+
+```

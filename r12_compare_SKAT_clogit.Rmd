@@ -1,0 +1,413 @@
+---
+title: "compare_clogit_glm_and_firth"
+output: html_document
+---
+
+started: Alexey Larionov, 28Apr2017  
+last updated: Alexey Larionov, 03May2017
+
+# Summary
+
+Compare SKAT and clogit on SKAT-style weighted and aggregated data  
+
+- Read and check the data  
+- Compare skat and clogit  
+- compare skar with and without M  
+
+# Todo: 
+- Adk DC about other metrics for models comparison ?  
+- Should we select "robust" variants on the basis of concordance between SKAT and clogit?  
+- Similarly: on the basis of concordance between clogit and glm?  
+
+# start_section
+
+```{r start_section}
+
+# Start time
+Sys.time()
+
+# Folders
+base_folder="/analysis/mtgroup_share/users/alexey/wecare_only_stat_05.17"
+setwd(base_folder)
+scripts_folder <- "scripts"
+source_data_folder <- "source_data"
+interim_data_folder <- "interim_data"
+results_folder <- "results"
+
+```
+
+# load_data
+
+Keep only relevant tables  
+
+```{r load_data}
+
+load(paste(interim_data_folder, "r11a_clogit_wecare_only.RData", sep="/"))
+rm(genotypes.mx, genotypes_inv_imp_wt.mx, genes_aggr_data.mx, genes_aggr_info.df, 
+   kgen.df, exac.df, variants.df, phenotypes.df)
+
+load(paste(interim_data_folder, "r09a_SKAT_wecare_only.RData", sep="/"))
+rm(genotypes.mx, kgen.df, exac.df, variants.df, phenotypes.df)
+
+load(paste(interim_data_folder, "r09b_SKAT_M_wecare_only.RData", sep="/"))
+rm(genotypes.mx, kgen.df, exac.df, variants.df, phenotypes.df)
+
+load(paste(interim_data_folder, "r10b_raw_affregated_AFs_trends.RData", sep="/"))
+rm(genotypes.mx, kgen.df, exac.df, variants.df, phenotypes.df, 
+   genes_aggr_data.mx, genotypes_inv_imp_wt.mx)
+
+```
+
+# check_data
+
+```{r check_and_sync_data}
+
+ls()
+
+dim(genes_aggr_clogit.df)
+str(genes_aggr_clogit.df)
+genes_aggr_clogit.df[1:5,1:5]
+
+dim(genes_aggr_skat.df)
+str(genes_aggr_skat.df)
+genes_aggr_skat.df[1:5,1:5]
+
+dim(genes_aggr_skat_M.df)
+str(genes_aggr_skat_M.df)
+genes_aggr_skat_M.df[1:5,1:5]
+
+dim(genes_aggr_info.df)
+str(genes_aggr_info.df)
+genes_aggr_info.df[1:5,1:5]
+
+dim(genes_aggr_exac.df)
+str(genes_aggr_exac.df)
+genes_aggr_exac.df[1:5,1:5]
+
+dim(genes_aggr_kgen.df)
+str(genes_aggr_kgen.df)
+genes_aggr_kgen.df[1:5,1:5]
+
+```
+
+# skat_with_and_without_M
+
+```{r skat_with_and_without_M}
+
+# Get p-values
+
+p_skat_burden <- genes_aggr_skat.df$burden_p
+n_skat_burden <- sum(!is.na(p_skat_burden))
+n_skat_burden
+
+p_skat_svt <- genes_aggr_skat.df$svt_p
+n_skat_svt <- sum(!is.na(p_skat_svt))
+n_skat_svt
+
+# Get p-values
+
+p_skat_burden_M <- genes_aggr_skat_M.df$burden_p
+n_skat_burden_M <- sum(!is.na(p_skat_burden_M))
+n_skat_burden_M
+
+p_skat_svt_M <- genes_aggr_skat_M.df$svt_p
+n_skat_svt_M <- sum(!is.na(p_skat_svt_M))
+n_skat_svt_M
+
+# Combine burden and svm
+
+p_skat_burden_svt <- ifelse(is.na(p_skat_burden), p_skat_svt, p_skat_burden)
+n_skat_burden_svt <- sum(!is.na(p_skat_burden_svt))
+n_skat_burden_svt
+
+p_skat_burden_svt_M <- ifelse(is.na(p_skat_burden_M), p_skat_svt_M, p_skat_burden_M)
+n_skat_burden_svt_M <- sum(!is.na(p_skat_burden_svt_M))
+n_skat_burden_svt_M
+
+# Make plots
+
+main=paste("skat burden with and w/o M\n",n_skat_burden,"genes")
+plot(p_skat_burden, p_skat_burden_M, main=main)
+
+main=paste("skat burden with and w/o M (log10 scale)\n",n_skat_burden,"genes")
+plot(log(p_skat_burden, 10),log(p_skat_burden_M, 10), main=main)
+
+main=paste("skat svt with and w/o M\n", n_skat_svt,"genes")
+plot(p_skat_svt, p_skat_svt_M, main=main)
+
+main=paste("skat svt with and w/o M (log10 scale)\n",n_skat_svt,"genes")
+plot(log(p_skat_svt, 10),log(p_skat_svt_M, 10), main=main)
+
+main=paste("skat burden svt with and w/o M\n", n_skat_burden_svt,"genes")
+plot(p_skat_burden_svt, p_skat_burden_svt_M, main=main)
+
+main=paste("skat burden svt with and w/o M (log10 scale)\n", n_skat_burden_svt,"genes")
+plot(log(p_skat_burden_svt, 10),log(p_skat_burden_svt_M, 10), main=main)
+
+# Calculate correlation tests
+
+cor.test(p_skat_burden, p_skat_burden_M)
+cor.test(p_skat_svt, p_skat_svt_M)
+cor.test(p_skat_burden_svt, p_skat_burden_svt_M)
+
+# clean-up
+rm(p_skat_burden, p_skat_burden_M, p_skat_svt, p_skat_svt_M, p_skat_burden_svt, p_skat_burden_svt_M,
+   n_skat_burden, n_skat_burden_M, n_skat_svt, n_skat_svt_M, n_skat_burden_svt, n_skat_burden_svt_M,
+   main)
+
+```
+
+# skat_vs_clogit
+
+```{r skat_vs_clogit}
+
+# sync_tables
+
+genes_aggr_clogit_sync.df <- genes_aggr_clogit.df[rownames(genes_aggr_skat.df),]
+dim(genes_aggr_clogit_sync.df)
+str(genes_aggr_clogit_sync.df)
+genes_aggr_clogit_sync.df[1:5,1:5]
+
+sum(rownames(genes_aggr_clogit_sync.df) != rownames(genes_aggr_skat.df))
+
+# Get p-values
+
+p_skat_burden <- genes_aggr_skat.df$burden_p
+n_skat_burden <- sum(!is.na(p_skat_burden))
+n_skat_burden
+
+p_skat_svt <- genes_aggr_skat.df$svt_p
+n_skat_svt <- sum(!is.na(p_skat_svt))
+n_skat_svt
+
+p_skat_burden_svt <- ifelse(is.na(p_skat_burden), p_skat_svt, p_skat_burden)
+n_skat_burden_svt <- sum(!is.na(p_skat_burden_svt))
+n_skat_burden_svt
+
+p_clogit_lrt <- genes_aggr_clogit_sync.df$p_clogit_lrt
+n_clogit_lrt <- sum(!is.na(p_clogit_lrt))
+n_clogit_lrt
+
+# Make plots
+
+main=paste("skat burden vs clogit\n",min(n_clogit_lrt, n_skat_burden),"genes")
+plot(p_skat_burden, p_clogit_lrt, main=main)
+
+main=paste("skat burden vs clogit (log10 scale)\n",min(n_clogit_lrt, n_skat_burden),"genes")
+plot(log(p_skat_burden, 10),log(p_clogit_lrt, 10), main=main)
+
+main=paste("skat svt vs clogit\n",min(n_clogit_lrt, n_skat_svt),"genes")
+plot(p_skat_svt, p_clogit_lrt, main=main)
+
+main=paste("skat svt vs clogit (log10 scale)\n",min(n_clogit_lrt, n_skat_svt),"genes")
+plot(log(p_skat_svt, 10),log(p_clogit_lrt, 10), main=main)
+
+main=paste("skat burden svt vs clogit\n",min(n_clogit_lrt, n_skat_burden_svt),"genes")
+plot(p_skat_burden_svt, p_clogit_lrt, main=main)
+
+main=paste("skat burden svt vs clogit (log10 scale)\n",min(n_clogit_lrt, n_skat_burden_svt),"genes")
+plot(log(p_skat_burden_svt, 10),log(p_clogit_lrt, 10), main=main)
+
+# Calculate correlation tests
+
+cor.test(p_skat_burden, p_clogit_lrt)
+cor.test(p_skat_svt, p_clogit_lrt)
+cor.test(p_skat_burden_svt, p_clogit_lrt)
+
+# Clean-up
+rm(p_clogit_lrt, p_skat_burden, p_skat_svt, p_skat_burden_svt, 
+   n_clogit_lrt, n_skat_burden, n_skat_svt, n_skat_burden_svt,
+   skat.df, clogit.df, main, skat_top100, clogit_top100, 
+   genes_aggr_clogit_sync.df)
+
+```
+
+# skat_M_vs_clogit
+
+```{r skat_M_vs_clogit}
+
+# sync_tables
+
+genes_aggr_clogit_sync.df <- genes_aggr_clogit.df[rownames(genes_aggr_skat_M.df),]
+dim(genes_aggr_clogit_sync.df)
+str(genes_aggr_clogit_sync.df)
+genes_aggr_clogit_sync.df[1:5,1:5]
+
+sum(rownames(genes_aggr_clogit_sync.df) != rownames(genes_aggr_skat_M.df))
+
+# Get p-values
+
+p_skat_M_burden <- genes_aggr_skat_M.df$burden_p
+n_skat_M_burden <- sum(!is.na(p_skat_M_burden))
+n_skat_M_burden
+
+p_skat_M_svt <- genes_aggr_skat_M.df$svt_p
+n_skat_M_svt <- sum(!is.na(p_skat_M_svt))
+n_skat_M_svt
+
+p_skat_M_burden_svt <- ifelse(is.na(p_skat_M_burden), p_skat_M_svt, p_skat_M_burden)
+n_skat_M_burden_svt <- sum(!is.na(p_skat_M_burden_svt))
+n_skat_M_burden_svt
+
+p_clogit_lrt <- genes_aggr_clogit_sync.df$p_clogit_lrt
+n_clogit_lrt <- sum(!is.na(p_clogit_lrt))
+n_clogit_lrt
+
+# Make plots
+
+main=paste("skat_M burden vs clogit\n",min(n_clogit_lrt, n_skat_M_burden),"genes")
+plot(p_skat_M_burden, p_clogit_lrt, main=main)
+
+main=paste("skat_M burden vs clogit (log10 scale)\n",min(n_clogit_lrt, n_skat_M_burden),"genes")
+plot(log(p_skat_M_burden, 10),log(p_clogit_lrt, 10), main=main)
+
+main=paste("skat_M svt vs clogit\n",min(n_clogit_lrt, n_skat_M_svt),"genes")
+plot(p_skat_M_svt, p_clogit_lrt, main=main)
+
+main=paste("skat_M svt vs clogit (log10 scale)\n",min(n_clogit_lrt, n_skat_M_svt),"genes")
+plot(log(p_skat_M_svt, 10),log(p_clogit_lrt, 10), main=main)
+
+main=paste("skat_M burden svt vs clogit\n",min(n_clogit_lrt, n_skat_M_burden_svt),"genes")
+plot(p_skat_M_burden_svt, p_clogit_lrt, main=main)
+
+main=paste("skat_M burden svt vs clogit (log10 scale)\n",min(n_clogit_lrt, n_skat_M_burden_svt),"genes")
+plot(log(p_skat_M_burden_svt, 10),log(p_clogit_lrt, 10), main=main)
+
+# Calculate correlation tests
+
+cor.test(p_skat_M_burden, p_clogit_lrt)
+cor.test(p_skat_M_svt, p_clogit_lrt)
+cor.test(p_skat_M_burden_svt, p_clogit_lrt)
+
+# Clean-up
+rm(p_clogit_lrt, p_skat_M_burden, p_skat_M_svt, p_skat_M_burden_svt, 
+   n_clogit_lrt, n_skat_M_burden, n_skat_M_svt, n_skat_M_burden_svt,
+   main, genes_aggr_clogit_sync.df)
+
+```
+
+# skat_clogit_overlap_union
+
+```{r skat_clogit_overlap_union}
+
+skat.df <- data.frame(gene=genes_aggr_skat.df$gene, 
+                      skat_p=ifelse(is.na(genes_aggr_skat.df$svt_p),
+                                    genes_aggr_skat.df$burden_p, 
+                                    genes_aggr_skat.df$svt_p),
+                      stringsAsFactors = FALSE)
+str(skat.df)
+skat.df <- skat.df[order(skat.df$skat_p),]
+top100_skat.df <- skat.df[1:100,]
+top100_skat.df
+
+clogit.df <- genes_aggr_clogit.df[,c("gene","p_clogit_lrt")]
+clogit.df <- clogit.df[!is.na(clogit.df$p_clogit_lrt),]
+str(clogit.df)
+clogit.df <- clogit.df[order(clogit.df$p_clogit_lrt),]
+top100_clogit.df <- clogit.df[1:100,]
+top100_clogit.df
+
+library(dplyr)
+inner_join(top100_skat.df, top100_clogit.df, by="gene")
+
+# Top 0.05 intersect
+
+skat_05_top <- skat.df[skat.df$skat_p<0.05,"gene"]
+length(skat_05_top)
+
+clogit_05_top <- clogit.df[clogit.df$p_clogit_lrt<0.05,"gene"]
+length(clogit_05_top)
+
+top_05_intersect <- intersect(skat_05_top, clogit_05_top)
+length(top_05_intersect)
+
+length(setdiff(skat_05_top,clogit_05_top))
+length(setdiff(clogit_05_top,skat_05_top))
+
+candidates <- c("FOXM1", "SLC9A3R1", "ACACA", 
+                "ATM", "CHEK2", "FANCB", 
+                "EPHB2", "TIMELESS", "ERCC6", "REV3L", "PDK4", "HDAC6")
+
+candidates[candidates %in% top_05_intersect]
+
+# Top 0.01 union
+
+skat_01_top <- skat.df[skat.df$skat_p<0.01,"gene"]
+length(skat_01_top)
+skat_01_top
+
+clogit_01_top <- clogit.df[clogit.df$p_clogit_lrt<0.01,"gene"]
+length(clogit_01_top)
+clogit_01_top
+
+top_01_union <- union(skat_01_top, clogit_01_top)
+length(top_01_union)
+genes_aggr_exac.df[top_01_union,c("af_exac_NFE", "af_ubc", "af_cbc", "trend_call")]
+genes_aggr_kgen.df[top_01_union,c("af_kgen", "af_ubc", "af_cbc", "trend_call")]
+
+# Look at trends in intersect 
+x <- intersect(skat_01_top,clogit_01_top)
+genes_aggr_exac.df[x,c("af_exac_NFE", "af_ubc", "af_cbc", "trend_call")]
+
+length(setdiff(skat_01_top,clogit_01_top))
+length(setdiff(clogit_01_top,skat_01_top))
+
+candidates <- c("FOXM1", "SLC9A3R1", "EPHB2", "TIMELESS", "ERCC6", "REV3L", "PDK4", "HDAC6")
+
+candidates[candidates %in% top_05_intersect]
+
+# Clean-up
+rm(skat.df, clogit.df, candidates, skat_01_top, clogit_01_top, skat_05_top, clogit_05_top, 
+   top_01_union, top_05_intersect, top100_skat.df, top100_clogit.df, x)
+
+```
+
+# data_summary
+
+NB: genes_aggr_clogit.df was reduced to sync with genes_aggr_skat.df  
+
+```{r data_summary}
+
+dim(genes_aggr_clogit.df)
+str(genes_aggr_clogit.df)
+genes_aggr_clogit.df[1:5,1:5]
+
+dim(genes_aggr_skat.df)
+str(genes_aggr_skat.df)
+genes_aggr_skat.df[1:5,1:5]
+
+dim(genes_aggr_skat_M.df)
+str(genes_aggr_skat_M.df)
+genes_aggr_skat_M.df[1:5,1:5]
+
+dim(genes_aggr_info.df)
+str(genes_aggr_info.df)
+genes_aggr_info.df[1:5,1:5]
+
+dim(genes_aggr_exac.df)
+str(genes_aggr_exac.df)
+genes_aggr_exac.df[1:5,1:5]
+
+dim(genes_aggr_kgen.df)
+str(genes_aggr_kgen.df)
+genes_aggr_kgen.df[1:5,1:5]
+
+```
+
+# save_data
+
+```{r save_data}
+
+save.image(paste(interim_data_folder, "r12_compare_SKAT_clogit_wecare_only.RData", sep="/"))
+
+```
+
+# final_section
+
+```{r final_section}
+
+ls()
+sessionInfo()
+Sys.time()
+
+```

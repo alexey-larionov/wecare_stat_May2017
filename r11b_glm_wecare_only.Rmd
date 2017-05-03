@@ -1,0 +1,712 @@
+---
+title: "glm_analysis_wecare_only"
+output: html_document
+---
+
+started: Alexey Larionov, 27Feb2017  
+last updated: Alexey Larionov, 03May2017
+
+# Summary
+
+glm analysis with glm on SKAT-style weighted and aggregated data  
+
+- Read and check the data  
+- Perform glm analysis on weighted and aggregated data  with and without matched data
+- Write results into text files  
+- Compare different p-estimates  
+- Make QQ-plots  
+
+# start_section
+
+```{r start_section}
+
+# Start time
+Sys.time()
+
+# Folders
+base_folder="/analysis/mtgroup_share/users/alexey/wecare_only_stat_05.17"
+setwd(base_folder)
+scripts_folder <- "scripts"
+source_data_folder <- "source_data"
+interim_data_folder <- "interim_data"
+results_folder <- "results"
+
+# Accessory functions
+source(paste(scripts_folder, "f02_tryCatchAdv.R", sep="/")) # advanced error handling
+source(paste(scripts_folder, "f03_qqunif_plot.R", sep="/")) # simple qq-plots
+
+```
+
+# load_data
+
+```{r load_data}
+
+load(paste(interim_data_folder, "r10a_invert_impute_weight_aggregate_wecare_only.RData", sep="/"))
+
+```
+
+# check_data
+
+```{r check_data}
+
+ls()
+
+dim(genotypes.mx)
+class(genotypes.mx)
+genotypes.mx[1:5,1:5]
+
+dim(genotypes_inv_imp_wt.mx)
+class(genotypes_inv_imp_wt.mx)
+genotypes_inv_imp_wt.mx[1:5,1:5]
+
+dim(genes_aggr_data.mx)
+class(genes_aggr_data.mx)
+genes_aggr_data.mx[1:5,1:5]
+
+dim(genes_aggr_info.df)
+str(genes_aggr_info.df)
+genes_aggr_info.df[1:5,1:5]
+
+dim(kgen.df)
+colnames(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+colnames(exac.df)
+exac.df[1:5,1:5]
+
+dim(variants.df)
+str(variants.df)
+variants.df[1:5,1:5]
+
+dim(phenotypes.df)
+str(phenotypes.df)
+phenotypes.df[1:5,1:5]
+
+# Check consistency of rownames and colnames
+sum(colnames(genotypes.mx) != rownames(phenotypes.df))
+sum(colnames(genes_aggr_data.mx) != rownames(phenotypes.df))
+
+sum(rownames(genes_aggr_info.df) != rownames(genes_aggr_data.mx))
+
+sum(rownames(genotypes.mx) != rownames(genotypes_inv_imp_wt.mx))
+sum(rownames(genotypes.mx) != rownames(kgen.df))
+sum(rownames(genotypes.mx) != rownames(exac.df))
+sum(rownames(genotypes.mx) != rownames(variants.df))
+
+```
+
+# prepare_data_for_analysis
+
+Verifying that there is No missed data   
+
+```{r prepare_data_for_analysis}
+
+# Eigenvectors
+E <- as.matrix(phenotypes.df[,c("eig1", "eig2")])
+sum(is.na(E)) # 0
+
+# Matching information (to compare glm with clogit?)
+M <- as.matrix(phenotypes.df[,c("age_dx", "rstime")])
+sum(is.na(M)) # 0
+
+# There is no significant diferences between cases and controls in age_dx
+mean(phenotypes.df[phenotypes.df$cc==1, "age_dx"])
+sd(phenotypes.df[phenotypes.df$cc==1, "age_dx"])
+mean(phenotypes.df[phenotypes.df$cc==0, "age_dx"])
+sd(phenotypes.df[phenotypes.df$cc==0, "age_dx"])
+t.test(phenotypes.df[phenotypes.df$cc==1, "age_dx"], 
+       phenotypes.df[phenotypes.df$cc==0, "age_dx"])
+
+# There is no significant diferences between cases and controls in rstime
+mean(phenotypes.df[phenotypes.df$cc==1, "rstime"])
+sd(phenotypes.df[phenotypes.df$cc==1, "rstime"])
+mean(phenotypes.df[phenotypes.df$cc==0, "rstime"])
+sd(phenotypes.df[phenotypes.df$cc==0, "rstime"])
+t.test(phenotypes.df[phenotypes.df$cc==1, "rstime"], 
+       phenotypes.df[phenotypes.df$cc==0, "rstime"])
+
+# Make a variable for hormone treatment.
+hormone <- phenotypes.df$hormone
+
+# Make variable for cytotoxic treatment
+chemo <- phenotypes.df$chemo_cat != "no"
+
+# Make joined treatment variable
+treatment <- as.integer(chemo | hormone)
+sum(is.na(treatment))
+
+# Number of pregnancies
+num_preg <- as.integer(phenotypes.df$num_preg)
+sum(is.na(num_preg))
+
+# Bind clinical covariates together
+C <- cbind(treatment, num_preg)
+
+# Outcomes
+Y <- phenotypes.df$cc
+sum(is.na(Y))
+
+# Clean-up
+rm(chemo, hormone, treatment, num_preg)
+
+```
+
+# run_glm
+
+This chunk runs glm without matching data  
+
+Using advanced error handling (see tryCatchAdv function)  
+
+The script is symlifyed basing on the preliminary tests, which showed  
+that glm() generates only warnings and no erors.  
+
+~3-5 min  
+
+```{r run_glm}
+
+# Get list of genes (get rid of NAs !)
+genes <- unique(as.character(variants.df$SYMBOL))
+length(genes)
+sum(is.na(genes))
+
+# Prepare output matrix
+header <- c("gene", "p_glm_lrt", "p_glm_anova", "p_glm_wald", 
+            "glm_status", "glm_message", 
+            "glm_null_status", "glm_null_message")
+
+glm.mx <- matrix(nrow=0, ncol=length(header))
+header -> colnames(glm.mx)  
+
+# For each gene
+for(gene in genes){
+  
+  # Get explanatory vector  
+  X <- genes_aggr_data.mx[gene,]
+  
+  # Try glm logit with advanced warnings/errors handling
+  glm_reg <- tryCatchAdv(glm(Y ~ X + E + C, family = "binomial"))
+  glm_reg_null <- tryCatchAdv(glm(Y ~ E + C, family = "binomial"))
+  
+  # Extract data and error/warning messages from tryCatchAdv() object
+  glm_status <- glm_reg$status
+  if(glm_status == "succeeded"){
+    glm_message <- NA
+  }else{
+    glm_message <- glm_reg$message$message
+  }
+  glm_reg <- glm_reg$value
+  
+  glm_null_status <- glm_reg_null$status
+  if(glm_null_status == "succeeded"){
+    glm_null_message <- NA
+  }else{
+    glm_null_message <- glm_reg_null$message$message
+  }
+  glm_reg_null <- glm_reg_null$value
+  
+  # Calculate LRT p-estimate
+  chi_stat_lrt = 2*(logLik(glm_reg) - logLik(glm_reg_null))
+  p_glm_lrt = 1 - pchisq(chi_stat_lrt, df=1)
+    
+  # Calculate LRT p-estimate using anova
+  glm_anova <- anova(glm_reg_null, glm_reg, test="LRT")
+  p_glm_anova <- glm_anova[2,"Pr(>Chi)"]
+
+  # Get Wald p-estimate
+  p_glm_wald <- summary(glm_reg)$coef["X", "Pr(>|z|)"]
+  
+  # Compile result
+  result <- c(gene, p_glm_lrt, p_glm_anova, p_glm_wald, 
+              glm_status, glm_message, 
+              glm_null_status, glm_null_message)
+  
+  # Add result to output table
+  glm.mx <- rbind(glm.mx, result)
+
+  # Clean-up
+  rm(glm_reg, glm_reg_null, 
+     chi_stat_lrt, glm_anova, 
+     p_glm_lrt, p_glm_anova, p_glm_wald, 
+     glm_status, glm_message, 
+     glm_null_status, glm_null_message, 
+     result)
+  
+}
+
+# Add rownames
+genes -> rownames(glm.mx)
+
+# Check the result
+dim(glm.mx)
+
+# Convert to data frame and update data types
+genes_aggr_glm.df <- as.data.frame(glm.mx)
+genes_aggr_glm.df$gene <- as.vector(genes_aggr_glm.df$gene)
+genes_aggr_glm.df$p_glm_lrt <- as.numeric(as.vector(genes_aggr_glm.df$p_glm_lrt))
+genes_aggr_glm.df$p_glm_anova <- as.numeric(as.vector(genes_aggr_glm.df$p_glm_anova))
+genes_aggr_glm.df$p_glm_wald <- as.numeric(as.vector(genes_aggr_glm.df$p_glm_wald))
+str(genes_aggr_glm.df)
+
+# Explore results
+summary(genes_aggr_glm.df$glm_status)
+summary(genes_aggr_glm.df$glm_message)
+
+summary(genes_aggr_glm.df$glm_null_status)
+summary(genes_aggr_glm.df$glm_null_message)
+
+summary(genes_aggr_glm.df$p_glm_lrt)
+summary(genes_aggr_glm.df$p_glm_anova)
+summary(genes_aggr_glm.df$p_glm_wald)
+
+# Write result to file
+output_file <- paste(results_folder, "r11b_glm_wecare_only.txt", sep="/")
+write.table(genes_aggr_glm.df, file=output_file, quote=FALSE, sep="\t")
+
+# Clean-up
+rm(gene, genes, P, output_file, header, glm.mx)
+
+```
+
+# run_glm_M
+
+Equivalent to the previous chunk, except for adding matching info to the models  
+
+```{r run_glm_M}
+
+# Get list of genes (get rid of NAs !)
+genes <- unique(as.character(variants.df$SYMBOL))
+length(genes)
+sum(is.na(genes))
+
+# Prepare output matrix
+header <- c("gene", "p_glm_lrt", "p_glm_anova", "p_glm_wald", 
+            "glm_status", "glm_message", 
+            "glm_null_status", "glm_null_message")
+
+glm.mx <- matrix(nrow=0, ncol=length(header))
+header -> colnames(glm.mx)  
+
+# For each gene
+for(gene in genes){
+  
+  # Get explanatory vector  
+  X <- genes_aggr_data.mx[gene,]
+  
+  # Try glm logit with advanced warnings/errors handling
+  glm_reg <- tryCatchAdv(glm(Y ~ X + E + C + M, family = "binomial"))
+  glm_reg_null <- tryCatchAdv(glm(Y ~ E + C + M, family = "binomial"))
+  
+  # Extract data and error/warning messages from tryCatchAdv() object
+  glm_status <- glm_reg$status
+  if(glm_status == "succeeded"){
+    glm_message <- NA
+  }else{
+    glm_message <- glm_reg$message$message
+  }
+  glm_reg <- glm_reg$value
+  
+  glm_null_status <- glm_reg_null$status
+  if(glm_null_status == "succeeded"){
+    glm_null_message <- NA
+  }else{
+    glm_null_message <- glm_reg_null$message$message
+  }
+  glm_reg_null <- glm_reg_null$value
+  
+  # Calculate LRT p-estimate
+  chi_stat_lrt = 2*(logLik(glm_reg) - logLik(glm_reg_null))
+  p_glm_lrt = 1 - pchisq(chi_stat_lrt, df=1)
+    
+  # Calculate LRT p-estimate using anova()
+  glm_anova <- anova(glm_reg_null, glm_reg, test="LRT")
+  p_glm_anova <- glm_anova[2,"Pr(>Chi)"]
+    
+  # Get Wald p-estimate
+  p_glm_wald <- summary(glm_reg)$coef["X", "Pr(>|z|)"]
+  
+  # Compile result
+  result <- c(gene, p_glm_lrt, p_glm_anova, p_glm_wald, 
+              glm_status, glm_message, 
+              glm_null_status, glm_null_message)
+  
+  # Add result to output table
+  glm.mx <- rbind(glm.mx, result)
+
+  # Clean-up
+  rm(glm_reg, glm_reg_null, 
+     chi_stat_lrt, glm_anova, 
+     p_glm_lrt, p_glm_anova, p_glm_wald, 
+     glm_status, glm_message, 
+     glm_null_status, glm_null_message, 
+     result)
+  
+}
+
+# Add rownames
+genes -> rownames(glm.mx)
+
+# Check the result
+dim(glm.mx)
+
+# Convert to data frame and update data types
+genes_aggr_glm_M.df <- as.data.frame(glm.mx)
+genes_aggr_glm_M.df$gene <- as.vector(genes_aggr_glm_M.df$gene)
+genes_aggr_glm_M.df$p_glm_lrt <- as.numeric(as.vector(genes_aggr_glm_M.df$p_glm_lrt))
+genes_aggr_glm_M.df$p_glm_anova <- as.numeric(as.vector(genes_aggr_glm_M.df$p_glm_anova))
+genes_aggr_glm_M.df$p_glm_wald <- as.numeric(as.vector(genes_aggr_glm_M.df$p_glm_wald))
+str(genes_aggr_glm_M.df)
+
+# Explore results
+summary(genes_aggr_glm_M.df$glm_status)
+summary(genes_aggr_glm_M.df$glm_message)
+
+summary(genes_aggr_glm_M.df$glm_null_status)
+summary(genes_aggr_glm_M.df$glm_null_message)
+
+summary(genes_aggr_glm_M.df$p_glm_lrt)
+summary(genes_aggr_glm_M.df$p_glm_anova)
+summary(genes_aggr_glm_M.df$p_glm_wald)
+
+# Write result to file
+output_file <- paste(results_folder, "r11b_glm_M_wecare_only.txt", sep="/")
+write.table(genes_aggr_glm_M.df, file=output_file, quote=FALSE, sep="\t")
+
+# Clean-up
+rm(gene, genes, X, Y, E, C, M, output_file, header, glm.mx, tryCatchAdv)
+
+```
+
+# compare_glm_p_estimates
+
+```{r compare_glm_p_estimates}
+
+# Get p-values
+
+p_glm_lrt <- genes_aggr_glm.df$p_glm_lrt
+sum(!is.na(p_glm_lrt))
+
+p_glm_lrt_succeeded <- p_glm_lrt[genes_aggr_glm.df$glm_status=="succeeded"]
+sum(!is.na(p_glm_lrt_succeeded))
+
+p_glm_anova <- genes_aggr_glm.df$p_glm_anova
+sum(!is.na(p_glm_anova))
+
+p_glm_anova_succeeded <- p_glm_anova[genes_aggr_glm.df$glm_status=="succeeded"]
+sum(!is.na(p_glm_anova_succeeded))
+
+p_glm_wald <- genes_aggr_glm.df$p_glm_wald
+sum(!is.na(p_glm_wald))
+
+p_glm_wald_succeeded <- p_glm_wald[genes_aggr_glm.df$glm_status=="succeeded"]
+sum(!is.na(p_glm_wald_succeeded))
+
+# Make plots
+
+main=paste("glm ANOVA vs LRT\nall",sum(!is.na(p_glm_lrt)),"genes")
+plot(p_glm_lrt,p_glm_anova, main=main)
+
+main=paste("glm ANOVA vs LRT (log10 scale)\nall",sum(!is.na(p_glm_lrt)),"genes")
+plot(log(p_glm_lrt, 10),log(p_glm_anova, 10), main=main)
+
+main=paste("glm ANOVA vs LRT\n",
+           sum(!is.na(p_glm_lrt_succeeded)),"genes with glm succeeded w/o warning")
+plot(p_glm_lrt_succeeded,p_glm_anova_succeeded, main=main)
+
+main=paste("glm ANOVA vs LRT (log10 scale)\n",
+           sum(!is.na(p_glm_lrt_succeeded)),"genes with glm succeeded w/o warning")
+plot(log(p_glm_lrt_succeeded, 10),log(p_glm_anova_succeeded, 10), main=main)
+
+main=paste("glm Wald vs LRT\nall",sum(!is.na(p_glm_wald)),"genes")
+plot(p_glm_lrt,p_glm_wald, main=main)
+
+main=paste("glm Wald vs LRT (log10 scale)\nall",sum(!is.na(p_glm_wald)),"genes")
+plot(log(p_glm_lrt, 10),log(p_glm_wald, 10), main=main)
+
+main=paste("glm Wald vs LRT\n",
+           sum(!is.na(p_glm_wald_succeeded)),"genes with glm succeeded w/o warning")
+plot(p_glm_lrt_succeeded,p_glm_wald_succeeded, main=main)
+
+main=paste("glm Wald vs LRT (log10 scale)\n",
+           sum(!is.na(p_glm_wald_succeeded)),"genes with glm succeeded w/o warning")
+plot(log(p_glm_lrt_succeeded, 10),log(p_glm_wald_succeeded,10), main=main)
+
+# Clean-up
+
+rm(p_glm_lrt, p_glm_lrt_succeeded,
+   p_glm_anova, p_glm_anova_succeeded,
+   p_glm_wald, p_glm_wald_succeeded,
+   main)
+
+```
+
+# compare_glm_M_p_estimates
+
+```{r compare_glm_M_p_estimates}
+
+# Get p-values
+
+p_glm_lrt <- genes_aggr_glm_M.df$p_glm_lrt
+sum(!is.na(p_glm_lrt))
+
+p_glm_lrt_succeeded <- p_glm_lrt[genes_aggr_glm_M.df$glm_status=="succeeded"]
+sum(!is.na(p_glm_lrt_succeeded))
+
+p_glm_anova <- genes_aggr_glm_M.df$p_glm_anova
+sum(!is.na(p_glm_anova))
+
+p_glm_anova_succeeded <- p_glm_anova[genes_aggr_glm_M.df$glm_status=="succeeded"]
+sum(!is.na(p_glm_anova_succeeded))
+
+p_glm_wald <- genes_aggr_glm_M.df$p_glm_wald
+sum(!is.na(p_glm_wald))
+
+p_glm_wald_succeeded <- p_glm_wald[genes_aggr_glm_M.df$glm_status=="succeeded"]
+sum(!is.na(p_glm_wald_succeeded))
+
+# Make plots
+
+main=paste("glm M ANOVA vs LRT\nall",sum(!is.na(p_glm_lrt)),"genes")
+plot(p_glm_lrt,p_glm_anova, main=main)
+
+main=paste("glm M ANOVA vs LRT (log10 scale)\nall",sum(!is.na(p_glm_lrt)),"genes")
+plot(log(p_glm_lrt, 10),log(p_glm_anova, 10), main=main)
+
+main=paste("glm M ANOVA vs LRT\n",
+           sum(!is.na(p_glm_lrt_succeeded)),"genes with glm succeeded w/o warning")
+plot(p_glm_lrt_succeeded,p_glm_anova_succeeded, main=main)
+
+main=paste("glm M ANOVA vs LRT (log10 scale)\n",
+           sum(!is.na(p_glm_lrt_succeeded)),"genes with glm succeeded w/o warning")
+plot(log(p_glm_lrt_succeeded, 10),log(p_glm_anova_succeeded, 10), main=main)
+
+main=paste("glm M Wald vs LRT\nall",sum(!is.na(p_glm_wald)),"genes")
+plot(p_glm_lrt,p_glm_wald, main=main)
+
+main=paste("glm M Wald vs LRT (log10 scale)\nall",sum(!is.na(p_glm_wald)),"genes")
+plot(log(p_glm_lrt, 10),log(p_glm_wald, 10), main=main)
+
+main=paste("glm M Wald vs LRT\n",
+           sum(!is.na(p_glm_wald_succeeded)),"genes with glm succeeded w/o warning")
+plot(p_glm_lrt_succeeded,p_glm_wald_succeeded, main=main)
+
+main=paste("glm M Wald vs LRT (log10 scale)\n",
+           sum(!is.na(p_glm_wald_succeeded)),"genes with glm succeeded w/o warning")
+plot(log(p_glm_lrt_succeeded, 10),log(p_glm_wald_succeeded,10), main=main)
+
+# Clean-up
+
+rm(p_glm_lrt, p_glm_lrt_succeeded,
+   p_glm_anova, p_glm_anova_succeeded,
+   p_glm_wald, p_glm_wald_succeeded,
+   main)
+
+```
+
+# compare_glm_with_and_without_M
+
+```{r compare_glm_with_and_without_M}
+
+# Get p-values
+p_glm_lrt <- genes_aggr_glm.df$p_glm_lrt
+sum(!is.na(p_glm_lrt))
+
+p_glm_M_lrt <- genes_aggr_glm_M.df$p_glm_lrt
+sum(!is.na(p_glm_M_lrt))
+
+# Draw plots
+main=paste("glm LRT with and without M\nall",sum(!is.na(p_glm_lrt)),"genes")
+plot(p_glm_lrt,p_glm_M_lrt, main=main)
+
+main=paste("glm LRT with and without M (log10 scale)\nall",sum(!is.na(p_glm_lrt)),"genes")
+plot(log(p_glm_lrt, 10),log(p_glm_M_lrt, 10), main=main)
+
+# Clean-up
+rm(p_glm_lrt, p_glm_M_lrt, main)
+
+```
+
+# glm_qq_plots
+
+```{r glm_qq_plots}
+
+# lrt
+p_glm_lrt <- genes_aggr_glm.df$p_glm_lrt
+lrt_na_count <- sum(is.na(p_glm_lrt))
+lrt_na_count
+lrt_zero_count <- sum(p_glm_lrt==0, na.rm=TRUE)
+lrt_zero_count
+p_glm_lrt <- p_glm_lrt[!is.na(p_glm_lrt)]
+p_glm_lrt <- p_glm_lrt[p_glm_lrt != 0]
+main <- paste("CBC vs UBC: glm lrt\n", 
+              length(p_glm_lrt),"genes (",
+              lrt_na_count, "NAs and",
+              lrt_zero_count, "zeroes omitted)")
+qqunif.plot(p_glm_lrt, main=main)
+
+# anova
+p_glm_anova <- genes_aggr_glm.df$p_glm_anova
+anova_na_count <- sum(is.na(p_glm_anova))
+anova_na_count
+anova_zero_count <- sum(p_glm_anova==0, na.rm=TRUE)
+anova_zero_count
+p_glm_anova <- p_glm_anova[!is.na(p_glm_anova)]
+p_glm_anova <- p_glm_anova[p_glm_anova != 0]
+main <- paste("CBC vs UBC: glm anova\n", 
+              length(p_glm_anova),"genes (",
+              anova_na_count, "NAs and",
+              anova_zero_count, "zeroes omitted)")
+qqunif.plot(p_glm_anova, main=main)
+
+# wald
+p_glm_wald <- genes_aggr_glm.df$p_glm_wald
+wald_na_count <- sum(is.na(p_glm_wald))
+wald_na_count
+wald_zero_count <- sum(p_glm_wald==0, na.rm=TRUE)
+wald_zero_count
+p_glm_wald <- p_glm_wald[!is.na(p_glm_wald)]
+p_glm_wald <- p_glm_wald[p_glm_wald != 0]
+main <- paste("CBC vs UBC: glm Wald\n", 
+              length(p_glm_wald),"genes (",
+              wald_na_count, "NAs and",
+              wald_zero_count, "zeroes omitted)")
+qqunif.plot(p_glm_wald, main=main)
+
+# Clean-up
+rm(lrt_na_count, lrt_zero_count, p_glm_lrt,
+   anova_na_count, anova_zero_count, p_glm_anova, 
+   wald_na_count, wald_zero_count, p_glm_wald, 
+   main)
+
+```
+
+# glm_M_qq_plots
+
+```{r glm_M_qq_plots}
+
+# lrt
+p_glm_lrt <- genes_aggr_glm_M.df$p_glm_lrt
+lrt_na_count <- sum(is.na(p_glm_lrt))
+lrt_na_count
+lrt_zero_count <- sum(p_glm_lrt==0, na.rm=TRUE)
+lrt_zero_count
+p_glm_lrt <- p_glm_lrt[!is.na(p_glm_lrt)]
+p_glm_lrt <- p_glm_lrt[p_glm_lrt != 0]
+main <- paste("CBC vs UBC: glm M lrt\n", 
+              length(p_glm_lrt),"genes (",
+              lrt_na_count, "NAs and",
+              lrt_zero_count, "zeroes omitted)")
+qqunif.plot(p_glm_lrt, main=main)
+
+# anova
+p_glm_anova <- genes_aggr_glm_M.df$p_glm_anova
+anova_na_count <- sum(is.na(p_glm_anova))
+anova_na_count
+anova_zero_count <- sum(p_glm_anova==0, na.rm=TRUE)
+anova_zero_count
+p_glm_anova <- p_glm_anova[!is.na(p_glm_anova)]
+p_glm_anova <- p_glm_anova[p_glm_anova != 0]
+main <- paste("CBC vs UBC: glm M anova\n", 
+              length(p_glm_anova),"genes (",
+              anova_na_count, "NAs and",
+              anova_zero_count, "zeroes omitted)")
+qqunif.plot(p_glm_anova, main=main)
+
+# wald
+p_glm_wald <- genes_aggr_glm_M.df$p_glm_wald
+wald_na_count <- sum(is.na(p_glm_wald))
+wald_na_count
+wald_zero_count <- sum(p_glm_wald==0, na.rm=TRUE)
+wald_zero_count
+p_glm_wald <- p_glm_wald[!is.na(p_glm_wald)]
+p_glm_wald <- p_glm_wald[p_glm_wald != 0]
+main <- paste("CBC vs UBC: glm M Wald\n", 
+              length(p_glm_wald),"genes (",
+              wald_na_count, "NAs and",
+              wald_zero_count, "zeroes omitted)")
+qqunif.plot(p_glm_wald, main=main)
+
+# Clean-up
+rm(lrt_na_count, lrt_zero_count, p_glm_lrt,
+   anova_na_count, anova_zero_count, p_glm_anova, 
+   wald_na_count, wald_zero_count, p_glm_wald, 
+   main, qqunif.plot)
+
+```
+
+# data_summary
+
+```{r}
+
+dim(genotypes.mx)
+class(genotypes.mx)
+genotypes.mx[1:5,1:5]
+
+dim(genotypes_inv_imp_wt.mx)
+class(genotypes_inv_imp_wt.mx)
+genotypes_inv_imp_wt.mx[1:5,1:5]
+
+dim(genes_aggr_data.mx)
+class(genes_aggr_data.mx)
+genes_aggr_data.mx[1:5,1:5]
+
+dim(genes_aggr_info.df)
+str(genes_aggr_info.df)
+genes_aggr_info.df[1:5,1:5]
+
+dim(kgen.df)
+colnames(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+colnames(exac.df)
+exac.df[1:5,1:5]
+
+dim(variants.df)
+str(variants.df)
+variants.df[1:5,1:5]
+
+dim(phenotypes.df)
+str(phenotypes.df)
+phenotypes.df[1:5,1:5]
+
+dim(genes_aggr_glm.df)
+str(genes_aggr_glm.df)
+genes_aggr_glm.df[1:5,1:5]
+
+dim(genes_aggr_glm_M.df)
+str(genes_aggr_glm_M.df)
+genes_aggr_glm_M.df[1:5,1:5]
+
+# Check consistency of rownames and colnames
+sum(colnames(genotypes.mx) != rownames(phenotypes.df))
+sum(colnames(genes_aggr_data.mx) != rownames(phenotypes.df))
+
+sum(rownames(genes_aggr_info.df) != rownames(genes_aggr_data.mx))
+sum(rownames(genes_aggr_info.df) != rownames(genes_aggr_glm.df))
+sum(rownames(genes_aggr_info.df) != rownames(genes_aggr_glm_M.df))
+
+sum(rownames(genotypes.mx) != rownames(genotypes_inv_imp_wt.mx))
+sum(rownames(genotypes.mx) != rownames(kgen.df))
+sum(rownames(genotypes.mx) != rownames(exac.df))
+sum(rownames(genotypes.mx) != rownames(variants.df))
+
+```
+
+# save_data
+
+```{r save_data}
+
+save.image(paste(interim_data_folder, "r11b_glm_wecare_only.RData", sep="/"))
+
+```
+
+# final_section
+
+```{r final_section}
+
+ls()
+sessionInfo()
+Sys.time()
+
+```

@@ -1,0 +1,460 @@
+---
+title: "calculate_eigenvectors_wecare_only"
+output: html_document
+---
+
+started: Alexey Larionov, 2016  
+last updated: Alexey Larionov, 03May2017
+
+# Summary
+
+Eigenvectors are calculated using **46,098** common variants only:  
+5% < AF  < 95% in each of the compared datasets (UBC and CBC)  
+
+Overall, eigenvectors are calculated for 3 datasets:  
+
+- wecare-only  
+- kgen50-wecare (using overlap wecare, nfe and kgen50)  
+- wecare-nfe-kgen2500 (using overlap wecare and nfe + possibly kgen2500)  
+
+This script deals with wecare-only dataset.  
+
+Requires f01_calculate_eigenvectors.R  
+
+Additionally calculates AFs and HWE for 480 cases (before excluding eigenvectors outliers)  
+Removes 827 variants violating HWE (p <10-4)  
+Some of these could be valid multiallelic variants - not verifyed at this occasion  
+
+Suggests two eigenvectors' outliers (> 6 SdtDev on 2nd EV): P5_E09 and P6_D05  
+Additionally there are two outliers along the 4th EV: P2_C08 and P4_F10  
+
+Input data: 247,059 vars x 480 cases (245 UBC and 235 CBC)  
+Output data: 246,232 vars x 480 cases (245 UBC and 235 CBC)  
+
+# start_section
+
+```{r start_section}
+
+# Time stamp
+Sys.time()
+
+# Folders
+base_folder="/analysis/mtgroup_share/users/alexey/wecare_only_stat_05.17"
+setwd(base_folder)
+scripts_folder <- "scripts"
+source_data_folder <- "source_data"
+interim_data_folder <- "interim_data"
+results_folder <- "results"
+
+# Required libraries
+library(ggplot2)
+library(plotly)
+library(HardyWeinberg)
+
+# Accessory functions
+source(paste(scripts_folder, "f03_qqunif_plot.R", sep="/"))
+source(paste(scripts_folder, "f01_calculate_eigenvectors.R", sep="/"))
+
+```
+
+# load_data
+
+```{r load_data}
+
+load(paste(interim_data_folder, "r04_filter_cases_and_variants_wecare_only.RData", sep="/"))
+
+```
+
+# check_data
+
+```{r check_data}
+
+ls()
+
+dim(genotypes.mx)
+class(genotypes.mx)
+genotypes.mx[1:5,1:5]
+
+dim(phenotypes.df)
+str(phenotypes.df)
+phenotypes.df[1:5,1:5]
+
+dim(variants.df)
+colnames(variants.df)
+variants.df[1:5,1:5]
+
+dim(kgen.df)
+colnames(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+colnames(exac.df)
+exac.df[1:5,1:5]
+
+# Check consistency of colnames and rownames
+sum(colnames(genotypes.mx) != rownames(phenotypes.df))
+
+sum(rownames(genotypes.mx) != rownames(variants.df))
+sum(rownames(genotypes.mx) != rownames(kgen.df))
+sum(rownames(genotypes.mx) != rownames(exac.df))
+
+```
+
+# recalculate_total_AFs
+
+Used for selecting common variants for eigenvectors computation.  
+Could be recalculated later after exclusion of eigenvectors outliers.  
+
+```{r recalculate_total_AFs}
+
+# Function to calculate AN
+get_allele_number.udf <- function(x){2*sum(!is.na(x))}
+
+# Rename AF fields in the variants table
+vars_colnames <- colnames(variants.df)
+"ac_raw" -> vars_colnames[ vars_colnames == "AC" ]
+"an_raw" -> vars_colnames[ vars_colnames == "AN" ]
+"af_raw" -> vars_colnames[ vars_colnames == "AF" ]
+vars_colnames -> colnames(variants.df)
+
+# Calculate total wecare ac, an and af
+ac_all <- apply(genotypes.mx, 1, sum, na.rm=TRUE)
+an_all <- apply(genotypes.mx, 1, get_allele_number.udf)
+af_all <- ac_all/an_all
+
+# Add new AFs to the variants table
+variants.df <- cbind(variants.df, ac_all, an_all, af_all)
+
+# Clean-up
+rm(get_allele_number.udf, ac_all, an_all, af_all, vars_colnames)
+
+```
+
+# calculate_ubc_AFs
+
+```{r calculate_ubc_AFs}
+
+# Function to calculate AN
+get_allele_number.udf <- function(x){2*sum(!is.na(x))}
+
+# Prepare genotypes table
+ubc_cases <- phenotypes.df$cc == 0 
+sum(ubc_cases) # 245
+ubc_genotypes.mx <- genotypes.mx[,ubc_cases]
+dim(ubc_genotypes.mx)
+
+# Calculate ubc ac, an and af
+ac_ubc <- apply(ubc_genotypes.mx, 1, sum, na.rm=TRUE)
+an_ubc <- apply(ubc_genotypes.mx, 1, get_allele_number.udf)
+af_ubc <- ac_ubc/an_ubc
+
+# Add updated AFs to variants.df
+variants.df <- cbind(variants.df, ac_ubc, an_ubc, af_ubc)
+
+# Clean-up
+rm(get_allele_number.udf, ubc_cases, ubc_genotypes.mx, ac_ubc, an_ubc, af_ubc)
+
+```
+
+# calculate_cbc_AFs
+
+```{r calculate_cbc_AFs}
+
+# Function to calculate AN
+get_allele_number.udf <- function(x){2*sum(!is.na(x))}
+
+# Prepare genotypes table
+cbc_cases <- phenotypes.df$cc == 1 
+sum(cbc_cases) # 235
+cbc_genotypes.mx <- genotypes.mx[,cbc_cases]
+dim(cbc_genotypes.mx)
+
+# Calculate cbc ac, an and af
+ac_cbc <- apply(cbc_genotypes.mx, 1, sum, na.rm=TRUE)
+an_cbc <- apply(cbc_genotypes.mx, 1, get_allele_number.udf)
+af_cbc <- ac_cbc/an_cbc
+
+# Add updated AFs to variants.df
+variants.df <- cbind(variants.df, ac_cbc, an_cbc, af_cbc)
+
+# Clean-up
+rm(get_allele_number.udf, cbc_cases, cbc_genotypes.mx, ac_cbc, an_cbc, af_cbc)
+
+```
+
+# explore_hwe
+
+Using library HardyWeinberg  
+
+```{r explore_hwe}
+
+# Prepare genotypes counts
+x <- MakeCounts(t(genotypes.mx),coding=c(0,1,2))
+dim(x)
+x[1:25,]
+
+# Calculate HW p-values
+y <- HWExactStats(x[,1:3], verbose=FALSE)
+
+# Select common variants
+common_variants <- variants.df$af_all > 0.05 & variants.df$af_all < 0.95
+sum(common_variants) # 48,574
+
+# Bonferroni threshold - too relaxed (EZ)
+th <- 1/length(y)
+th # ~4e-6
+hwe_violators <- y < th
+sum(hwe_violators) # 724
+
+# Arbitrary conventional threshold between 5e-4 5e-5 (EZ)
+th <- 0.0001 
+hwe_violators <- y < th
+sum(hwe_violators) # 827
+qqunif.plot(y[!hwe_violators & common_variants], 
+            main=paste("Common variants, excluding HWE violaters",
+                       "\nexclusion threshold:", th, 
+                       "\n excluded",sum(hwe_violators), "of", 
+                       format(length(y), big.mark=",")))
+
+# Remove variants violating HWE 
+variants.df <- variants.df[!hwe_violators,]
+genotypes.mx <- genotypes.mx[!hwe_violators,]
+kgen.df <- kgen.df[!hwe_violators,]
+exac.df <- exac.df[!hwe_violators,]
+
+# Check results
+dim(variants.df)
+
+# Clean-up
+rm(x, y, th, hwe_violators, common_variants, qqunif.plot)
+
+```
+
+# calculate_eigenvectors
+
+Requires source("f01_calculate_eigenvectors.R")  
+
+Only common variants (0.05 < AF < 0.95 in both CBC and UBC) will be used for eigenvectors calculation.  
+
+Note exclusion on both sides: low- and high- AFs:  
+- Low AFs remove rare variants with common allele in reference genome  
+- Hight AFs remove rare variants with common allele in reference genome  
+
+```{r calculate_eigenvectors}
+
+# --- Make subset of data with common variants only
+
+cbc_common_vars <- variants.df$af_cbc > 0.05 & variants.df$af_cbc < 0.95
+sum(cbc_common_vars) # 47,785
+
+ubc_common_vars <- variants.df$af_ubc > 0.05 & variants.df$af_ubc < 0.95
+sum(ubc_common_vars) # 47,732
+
+common_overlap_vars <- cbc_common_vars & ubc_common_vars
+sum(common_overlap_vars) # 46,098
+
+min(variants.df$af_all[common_overlap_vars]) # ~0.05
+max(variants.df$af_all[common_overlap_vars]) # ~0.95
+
+common_overlap_genotypes.mx <- genotypes.mx[common_overlap_vars,]
+dim(common_overlap_genotypes.mx)
+common_overlap_genotypes.mx[1:5,1:5]
+
+# --- Calculate eigenvectors --- #
+
+wecare.eigen <- normalise_and_calculate_eigenvectors.udf(common_overlap_genotypes.mx)
+
+# Clean-up
+rm(cbc_common_vars, ubc_common_vars, common_overlap_vars, 
+   common_overlap_genotypes.mx, normalise_and_calculate_eigenvectors.udf)
+
+```
+
+# plot_eigenvectors
+
+```{r plot_eigenvectors}
+
+# --- Prepare data for plotting --- #
+
+wecare.eigenvectors.df <- as.data.frame(wecare.eigen$vectors) # eigenvectors in columns
+
+# Prepare colour scale
+colours <- c("UBC" = "BLUE", "CBC" = "RED")
+userColourScale <- scale_colour_manual(values=colours)
+
+# Prepare cases lables
+cases_labels <- as.vector(phenotypes.df$cc)
+"CBC" -> cases_labels[cases_labels==1]
+"UBC" -> cases_labels[cases_labels==0]
+
+summary(as.factor(cases_labels))
+
+# Prepare cases IDs (for labels on onteractive plot)
+cases_IDs <- as.vector(phenotypes.df$wes_id)
+
+# make the dataframe
+data2plot.df <- cbind(cases_IDs, cases_labels, wecare.eigenvectors.df[,1:5])
+colnames(data2plot.df) <- c("wes_id", "group", "ev1", "ev2", "ev3", "ev4", "ev5")
+
+# --- Plot eig1 vs eig2 --- #
+
+g <- ggplot(data2plot.df, aes(ev1, ev2)) +
+  geom_point(aes(colour=group, fill=group, text = wes_id)) + 
+  labs(title="wecare common variants<br>(46,098 x 480)", x ="eigenvector1", y = "eigenvector2") +
+  userColourScale
+
+ggplotly(g)
+
+# --- Plot eig2 vs eig3 --- #
+
+g <- ggplot(data2plot.df, aes(ev2, ev3)) +
+  geom_point(aes(colour=group, fill=group, text = wes_id)) + 
+  labs(title="wecare common variants<br>(46,098 x 480)", x ="eigenvector2", y = "eigenvector3") +
+  userColourScale
+
+ggplotly(g)
+
+# --- Plot eig3 vs eig4 --- #
+
+g <- ggplot(data2plot.df, aes(ev3, ev4)) +
+  geom_point(aes(colour=group, fill=group, text = wes_id)) + 
+  labs(title="wecare common variants<br>(46,098 x 480)", x ="eigenvector3", y = "eigenvector4") +
+  userColourScale
+
+ggplotly(g)
+
+# --- Plot eig4 vs eig5 --- #
+
+g <- ggplot(data2plot.df, aes(ev4, ev5)) +
+  geom_point(aes(colour=group, fill=group, text = wes_id)) + 
+  labs(title="wecare common variants<br>(46,098 x 480)", x ="eigenvector4", y = "eigenvector5") +
+  userColourScale
+
+ggplotly(g)
+
+# --- Clean-up --- #
+
+rm(wecare.eigenvectors.df, g, data2plot.df, cases_IDs, cases_labels, colours, userColourScale)
+
+```
+
+# calculate_outliers
+
+Explore 6 standard deviations in 5 top eigenvectors  
+
+```{r calculate_outliers}
+
+wecare.eigenvectors.mx <- wecare.eigen$vectors # eigenvectors in columns
+
+ev1 <- wecare.eigenvectors.mx[,1]
+ev1.positive_outliers <- ev1 > mean(ev1) + 6 * sd(ev1)
+ev1.negative_outliers <- ev1 < mean(ev1) - 6 * sd(ev1)
+sum(ev1.positive_outliers)
+sum(ev1.negative_outliers)
+
+phenotypes.df$wes_id[ev1.positive_outliers]
+phenotypes.df$wes_id[ev1.negative_outliers]
+
+ev2 <- wecare.eigenvectors.mx[,2]
+ev2.positive_outliers <- ev2 > mean(ev2) + 6 * sd(ev2)
+ev2.negative_outliers <- ev2 < mean(ev2) - 6 * sd(ev2)
+sum(ev2.positive_outliers)
+sum(ev2.negative_outliers)
+
+phenotypes.df$wes_id[ev2.positive_outliers]
+phenotypes.df$wes_id[ev2.negative_outliers]
+
+ev3 <- wecare.eigenvectors.mx[,3]
+ev3.positive_outliers <- ev3 > mean(ev3) + 6 * sd(ev3)
+ev3.negative_outliers <- ev3 < mean(ev3) - 6 * sd(ev3)
+sum(ev3.positive_outliers)
+sum(ev3.negative_outliers)
+
+phenotypes.df$wes_id[ev3.positive_outliers]
+phenotypes.df$wes_id[ev3.negative_outliers]
+
+ev4 <- wecare.eigenvectors.mx[,4]
+ev4.positive_outliers <- ev4 > mean(ev4) + 6 * sd(ev4)
+ev4.negative_outliers <- ev4 < mean(ev4) - 6 * sd(ev4)
+sum(ev4.positive_outliers)
+sum(ev4.negative_outliers)
+
+phenotypes.df$wes_id[ev4.positive_outliers]
+phenotypes.df$wes_id[ev4.negative_outliers]
+
+ev5 <- wecare.eigenvectors.mx[,5]
+ev5.positive_outliers <- ev5 > mean(ev5) + 6 * sd(ev5)
+ev5.negative_outliers <- ev5 < mean(ev5) - 6 * sd(ev5)
+sum(ev5.positive_outliers)
+sum(ev5.negative_outliers)
+
+phenotypes.df$wes_id[ev5.positive_outliers]
+phenotypes.df$wes_id[ev5.negative_outliers]
+
+# Plot eigenvalues
+plot(wecare.eigen$values, main="Eigenvalues, wecare only")
+wecare.eigen$values[1:10]
+
+# Clean-up
+rm(wecare.eigenvectors.mx, 
+   ev1, ev1.positive_outliers, ev1.negative_outliers, 
+   ev2, ev2.positive_outliers, ev2.negative_outliers, 
+   ev3, ev3.positive_outliers, ev3.negative_outliers,
+   ev4, ev4.positive_outliers, ev4.negative_outliers,
+   ev5, ev5.positive_outliers, ev5.negative_outliers)
+
+```
+
+# data_summary
+
+```{r data_summary}
+
+ls()
+
+dim(genotypes.mx)
+class(genotypes.mx)
+genotypes.mx[1:5,1:5]
+
+dim(phenotypes.df)
+str(phenotypes.df)
+phenotypes.df[1:5,1:5]
+
+dim(variants.df)
+colnames(variants.df)
+variants.df[1:5,1:5]
+
+dim(kgen.df)
+colnames(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+colnames(exac.df)
+exac.df[1:5,1:5]
+
+str(wecare.eigen)
+
+sum(colnames(genotypes.mx) != rownames(phenotypes.df))
+
+sum(rownames(genotypes.mx) != rownames(variants.df))
+sum(rownames(genotypes.mx) != rownames(kgen.df))
+sum(rownames(genotypes.mx) != rownames(exac.df))
+
+```
+
+# save_data
+
+```{r save_data}
+
+save.image(paste(interim_data_folder, "r05_calculate_egenvectors_wecare_only.RData", sep="/"))
+
+```
+
+# final_section
+
+```{r final_section}
+
+ls()
+sessionInfo()
+Sys.time()
+
+```

@@ -1,0 +1,508 @@
+---
+title: "clogit_matched_analysis_wecare_only"
+output: html_document
+---
+
+started: Alexey Larionov, 27Feb2017  
+last updated: Alexey Larionov, 03May2017
+
+# Summary
+
+Matched analysis with clogit on SKAT-style weighted and aggregated data  
+
+- Read and check the data  
+- Perform clogit matched analysis on weighted and aggregated data  
+- Write results into text file  
+- Compare different p-estimates  
+- Make QQ-plots  
+
+# start_section
+
+```{r start_section}
+
+# Start time
+Sys.time()
+
+# Folders
+base_folder="/analysis/mtgroup_share/users/alexey/wecare_only_stat_05.17"
+setwd(base_folder)
+scripts_folder <- "scripts"
+source_data_folder <- "source_data"
+interim_data_folder <- "interim_data"
+results_folder <- "results"
+
+# Load libraries and functions
+library(survival) # for clogit (matched analysis)
+
+# Accessory functions
+source(paste(scripts_folder, "f02_tryCatchAdv.R", sep="/")) # advanced error handling
+source(paste(scripts_folder, "f03_qqunif_plot.R", sep="/")) # simple qq-plots
+
+```
+
+# load_data
+
+```{r load_data}
+
+load(paste(interim_data_folder, "r10a_invert_impute_weight_aggregate_wecare_only.RData", sep="/"))
+
+```
+
+# check_data
+
+```{r check_data}
+
+ls()
+
+dim(genotypes.mx)
+class(genotypes.mx)
+genotypes.mx[1:5,1:5]
+
+dim(genotypes_inv_imp_wt.mx)
+class(genotypes_inv_imp_wt.mx)
+genotypes_inv_imp_wt.mx[1:5,1:5]
+
+dim(genes_aggr_data.mx)
+class(genes_aggr_data.mx)
+genes_aggr_data.mx[1:5,1:5]
+
+dim(genes_aggr_info.df)
+str(genes_aggr_info.df)
+genes_aggr_info.df[1:5,1:5]
+
+dim(kgen.df)
+colnames(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+colnames(exac.df)
+exac.df[1:5,1:5]
+
+dim(variants.df)
+str(variants.df)
+variants.df[1:5,1:5]
+
+dim(phenotypes.df)
+str(phenotypes.df)
+phenotypes.df[1:5,1:5]
+
+# Check consistency of rownames and colnames
+sum(colnames(genotypes.mx) != rownames(phenotypes.df))
+sum(colnames(genes_aggr_data.mx) != rownames(phenotypes.df))
+
+sum(rownames(genes_aggr_info.df) != rownames(genes_aggr_data.mx))
+
+sum(rownames(genotypes.mx) != rownames(genotypes_inv_imp_wt.mx))
+sum(rownames(genotypes.mx) != rownames(kgen.df))
+sum(rownames(genotypes.mx) != rownames(exac.df))
+sum(rownames(genotypes.mx) != rownames(variants.df))
+
+```
+
+# prepare_data_for_analysis
+
+Verifying that there is no missed data   
+
+```{r prepare_data_for_analysis}
+
+# Eigenvectors
+E <- as.matrix(phenotypes.df[,c("eig1", "eig2")])
+sum(is.na(E)) # 0
+
+# Pairs IDs (for clogit)
+P <- phenotypes.df$setno
+sum(is.na(P)) # 0
+
+# Make a variable for hormone treatment.
+hormone <- phenotypes.df$hormone
+
+# Make variable for cytotoxic treatment
+chemo <- phenotypes.df$chemo_cat != "no"
+
+# Make joined treatment variable
+treatment <- as.integer(chemo | hormone)
+sum(is.na(treatment))
+
+# Number of pregnancies
+num_preg <- as.integer(phenotypes.df$num_preg)
+sum(is.na(num_preg))
+
+# Bind clinical covariates together
+C <- cbind(treatment, num_preg)
+
+# Outcomes
+Y <- phenotypes.df$cc
+sum(is.na(Y))
+
+# Clean-up
+rm(chemo, hormone, treatment, num_preg)
+
+```
+
+# run_clogit
+
+Use advanced error handling (see tryCatchAdv function)  
+~3-5 min  
+
+```{r run_clogit}
+
+# Get list of genes (get rid of NAs if any!)
+genes <- unique(as.character(variants.df$SYMBOL))
+length(genes)
+sum(is.na(genes))
+
+# Prepare output matrix
+header <- c("gene", "clogit_mode", "p_clogit_lrt", "p_clogit_anova", "p_clogit_wald", 
+            "std_clogit_status", "std_clogit_message", "std_clogit_null_status", "std_clogit_null_message", 
+            "appr_clogit_status", "appr_clogit_message", "appr_clogit_null_status", "appr_clogit_null_message")
+
+clogit.mx <- matrix(nrow=0, ncol=length(header))
+header -> colnames(clogit.mx)  
+
+# For each gene
+for(gene in genes){
+
+  # Get explanatory vector  
+  X <- genes_aggr_data.mx[gene,]
+  
+  # Initialise output variables
+  clogit_mode <- "standard"
+  clogit_reg <- NA
+  clogit_reg_null <- NA
+  p_clogit_lrt <- NA
+  p_clogit_anova <- NA
+  p_clogit_wald <- NA
+  std_clogit_status <- NA
+  std_clogit_message <- NA
+  std_clogit_null_status <- NA
+  std_clogit_null_message <- NA
+  appr_clogit_status <- NA
+  appr_clogit_message <- NA
+  appr_clogit_null_status <- NA
+  appr_clogit_null_message <- NA
+  
+  # Try clogit using advanced catching of errors/warnings
+  # (see details within the tryCatchAdv() function)
+  clogit_reg <- tryCatchAdv(clogit(Y ~ X + E + C + strata(P), method="exact"))
+  clogit_reg_null <- tryCatchAdv(clogit(Y ~ E + C + strata(P), method="exact"))
+  
+  # Get status (success or error/warning) and error/warning messages (if any)
+  std_clogit_status <- clogit_reg$status
+  std_clogit_message <- clogit_reg$message
+  std_clogit_null_status <- clogit_reg_null$status
+  std_clogit_null_message <- clogit_reg_null$message
+  
+  # If any clogit model failed in default ("standard") mode e.g.
+  # http://r.789695.n4.nabble.com/Error-when-running-Conditional-Logit-Model-td948556.html 
+  if( std_clogit_status == "error" | std_clogit_null_status == "error"){
+
+    # Try approximate clogit
+    # http://stats.stackexchange.com/questions/109222/conditional-logistic-regression-model-does-not-converge-but-logistic-regression
+    clogit_mode <- "approximate"
+    
+    clogit_reg <- tryCatchAdv(clogit( Y ~ X + E + C + strata(P), method="approximate"))
+    clogit_reg_null <- tryCatchAdv(clogit( Y ~ E + C + strata(P), method="approximate"))
+
+    # Get status and messages    
+    appr_clogit_status <- clogit_reg$status
+    appr_clogit_message <- clogit_reg$message
+    appr_clogit_null_status <- clogit_reg_null$status
+    appr_clogit_null_message <- clogit_reg_null$message
+
+  }
+
+  # If both standard and approximate attempts failed
+  if((std_clogit_status == "error" | std_clogit_null_status == "error") & 
+     (appr_clogit_status == "error" | appr_clogit_null_status == "error")){
+    
+    # Set eror status, do not calculate p-estimates
+    clogit_mode <- "error"
+    
+  # Calculate p-estimates
+  } else {
+    
+    # Extract values from tryCatchAdv objects
+    clogit_reg <- clogit_reg$value
+    clogit_reg_null <- clogit_reg_null$value
+    
+    # Calculate LRT p-estimate
+    chi_stat_lrt = 2*(logLik(clogit_reg) - logLik(clogit_reg_null))
+    p_clogit_lrt = 1 - pchisq(chi_stat_lrt, df=1)
+    
+    # Calculate LRT p-estimate using anova
+    clogit_anova <- anova(clogit_reg_null, clogit_reg, test="LRT")
+    p_clogit_anova <- clogit_anova[2,"P(>|Chi|)"]
+
+    # Get Wald p-estimate
+    p_clogit_wald <- summary(clogit_reg)$coef["X", "Pr(>|z|)"]
+  
+    # Clean-up
+    rm(chi_stat_lrt, clogit_anova)
+
+  }
+
+  # Extract text from message objects (if any)
+  if(!is.na(std_clogit_status) &
+     (std_clogit_status == "warning" | 
+      std_clogit_status == "error")){
+    std_clogit_message <- std_clogit_message$message}
+  
+  if(!is.na(std_clogit_null_status) & 
+     (std_clogit_null_status == "warning" |
+      std_clogit_null_status == "error")){
+    std_clogit_null_message <- std_clogit_null_message$message}
+
+  if(!is.na(appr_clogit_status) &
+     (appr_clogit_status == "warning" | 
+      appr_clogit_status == "error")){
+    appr_clogit_message <- appr_clogit_message$message}
+  
+  if(!is.na(appr_clogit_null_status) &
+     (appr_clogit_null_status == "warning" |
+      appr_clogit_null_status == "error")){
+    appr_clogit_null_message <- appr_clogit_null_message$message}
+  
+  # Compile result
+  result <- c(gene, clogit_mode, p_clogit_lrt, p_clogit_anova, p_clogit_wald, 
+            std_clogit_status, std_clogit_message, std_clogit_null_status, std_clogit_null_message, 
+            appr_clogit_status, appr_clogit_message, appr_clogit_null_status, appr_clogit_null_message)
+  
+  # Add result to output table
+  clogit.mx <- rbind(clogit.mx, result)
+
+  # Clean-up
+  rm(X, clogit_mode, clogit_reg, clogit_reg_null, p_clogit_lrt, p_clogit_anova, p_clogit_wald, 
+     std_clogit_status, std_clogit_message, std_clogit_null_status, std_clogit_null_message, 
+     appr_clogit_status, appr_clogit_message, appr_clogit_null_status, appr_clogit_null_message,
+     result)
+
+} # Next gene
+
+# Add rownames
+genes -> rownames(clogit.mx)
+
+# Check the result
+dim(clogit.mx)
+
+# Convert to data frame and update data types
+genes_aggr_clogit.df <- as.data.frame(clogit.mx)
+genes_aggr_clogit.df$gene <- as.vector(genes_aggr_clogit.df$gene)
+genes_aggr_clogit.df$p_clogit_lrt <- as.numeric(as.vector(genes_aggr_clogit.df$p_clogit_lrt))
+genes_aggr_clogit.df$p_clogit_anova <- as.numeric(as.vector(genes_aggr_clogit.df$p_clogit_anova))
+genes_aggr_clogit.df$p_clogit_wald <- as.numeric(as.vector(genes_aggr_clogit.df$p_clogit_wald))
+str(genes_aggr_clogit.df)
+
+# Explore results
+summary(genes_aggr_clogit.df$clogit_mode)
+
+summary(genes_aggr_clogit.df$p_clogit_lrt)
+summary(genes_aggr_clogit.df$p_clogit_anova)
+sum(genes_aggr_clogit.df$p_clogit_anova == 0, na.rm=TRUE)
+summary(genes_aggr_clogit.df$p_clogit_wald)
+
+summary(genes_aggr_clogit.df$std_clogit_status)
+summary(genes_aggr_clogit.df$std_clogit_message[genes_aggr_clogit.df$std_clogit_status=="error", drop=TRUE])
+summary(genes_aggr_clogit.df$std_clogit_message[genes_aggr_clogit.df$std_clogit_status=="warning", drop=TRUE])
+# 456 genes where "Loglik converged before variable  1 ; beta may be infinite." - are these very good genes?
+
+summary(genes_aggr_clogit.df$std_clogit_null_status)
+summary(genes_aggr_clogit.df$std_clogit_null_message)
+
+summary(genes_aggr_clogit.df$appr_clogit_status)
+summary(genes_aggr_clogit.df$appr_clogit_message[genes_aggr_clogit.df$appr_clogit_status=="error", drop=TRUE])
+summary(genes_aggr_clogit.df$appr_clogit_message[genes_aggr_clogit.df$appr_clogit_status=="warning", drop=TRUE])
+# 624 genes "Loglik converged before variable ... ; beta may be infinite." - are these very good genes?
+
+summary(genes_aggr_clogit.df$appr_clogit_null_status)
+summary(genes_aggr_clogit.df$appr_clogit_null_message)
+
+# Write result to file
+output_file <- paste(results_folder, "r11a_clogit_wecare_only.txt", sep="/")
+write.table(genes_aggr_clogit.df, file=output_file, quote=FALSE, sep="\t")
+
+# Clean-up
+rm(X, Y, P, C, E, gene, genes, output_file, header, clogit.mx, tryCatchAdv)
+
+```
+
+# compare_clogit_p_estimates
+
+```{r compare_clogit_p_estimates}
+
+p_clogit_lrt <- genes_aggr_clogit.df$p_clogit_lrt
+sum(!is.na(p_clogit_lrt))
+
+p_clogit_lrt_standard <- p_clogit_lrt[genes_aggr_clogit.df$clogit_mode=="standard"]
+sum(!is.na(p_clogit_lrt_standard))
+
+p_clogit_anova <- genes_aggr_clogit.df$p_clogit_anova
+sum(!is.na(p_clogit_anova))
+
+p_clogit_anova_standard <- p_clogit_anova[genes_aggr_clogit.df$clogit_mode=="standard"]
+sum(!is.na(p_clogit_anova_standard))
+
+p_clogit_wald <- genes_aggr_clogit.df$p_clogit_wald
+sum(!is.na(p_clogit_wald))
+
+p_clogit_wald_standard <- p_clogit_wald[genes_aggr_clogit.df$clogit_mode=="standard"]
+sum(!is.na(p_clogit_wald_standard))
+
+main=paste("clogit ANOVA vs LRT\nall",sum(!is.na(p_clogit_lrt)),"genes")
+plot(p_clogit_lrt,p_clogit_anova, main=main)
+
+main=paste("clogit ANOVA vs LRT (log10 scale)\nall",sum(!is.na(p_clogit_lrt)),"genes")
+plot(log(p_clogit_lrt, 10),log(p_clogit_anova, 10), main=main)
+
+main=paste("clogit ANOVA vs LRT\n",
+           sum(!is.na(p_clogit_lrt_standard)),"genes in standard clogit mode")
+plot(p_clogit_lrt_standard,p_clogit_anova_standard, main=main)
+
+main=paste("clogit ANOVA vs LRT (log10 scale)\n",
+           sum(!is.na(p_clogit_lrt_standard)),"genes in standard clogit mode")
+plot(log(p_clogit_lrt_standard, 10),log(p_clogit_anova_standard, 10), main=main)
+
+main=paste("clogit Wald vs LRT\nall",sum(!is.na(p_clogit_wald)),"genes")
+plot(p_clogit_lrt,p_clogit_wald, main=main)
+
+main=paste("clogit Wald vs LRT (log10 scale)\nall",sum(!is.na(p_clogit_wald)),"genes")
+plot(log(p_clogit_lrt, 10),log(p_clogit_wald, 10), main=main)
+
+main=paste("clogit Wald vs LRT\n",sum(!is.na(p_clogit_wald_standard)),"genes in standard clogit mode")
+plot(p_clogit_lrt_standard,p_clogit_wald_standard, main=main)
+
+main=paste("clogit Wald vs LRT (log10 scale)\n",
+           sum(!is.na(p_clogit_wald_standard)),"genes in standard clogit mode")
+plot(log(p_clogit_lrt_standard, 10),log(p_clogit_wald_standard,10), main=main)
+
+rm(p_clogit_lrt, p_clogit_lrt_standard,
+   p_clogit_anova, p_clogit_anova_standard,
+   p_clogit_wald, p_clogit_wald_standard, 
+   main)
+
+```
+
+# clogit_qq_plots
+
+```{r clogit_qq_plots}
+
+# lrt
+p_clogit_lrt <- genes_aggr_clogit.df$p_clogit_lrt
+lrt_na_count <- sum(is.na(p_clogit_lrt))
+lrt_na_count
+lrt_zero_count <- sum(p_clogit_lrt==0, na.rm=TRUE)
+lrt_zero_count
+p_clogit_lrt <- p_clogit_lrt[!is.na(p_clogit_lrt)]
+p_clogit_lrt <- p_clogit_lrt[p_clogit_lrt != 0]
+main <- paste("CBC vs UBC: matched, clogit lrt\n", 
+              length(p_clogit_lrt),"genes (",
+              lrt_na_count, "NAs and",
+              lrt_zero_count, "zeroes omitted)")
+qqunif.plot(p_clogit_lrt, main=main)
+
+# anova
+p_clogit_anova <- genes_aggr_clogit.df$p_clogit_anova
+anova_na_count <- sum(is.na(p_clogit_anova))
+anova_na_count
+anova_zero_count <- sum(p_clogit_anova==0, na.rm=TRUE)
+anova_zero_count
+p_clogit_anova <- p_clogit_anova[!is.na(p_clogit_anova)]
+p_clogit_anova <- p_clogit_anova[p_clogit_anova != 0]
+main <- paste("CBC vs UBC: matched, clogit anova\n", 
+              length(p_clogit_anova),"genes (",
+              anova_na_count, "NAs and",
+              anova_zero_count, "zeroes omitted)")
+qqunif.plot(p_clogit_anova, main=main)
+
+# wald
+p_clogit_wald <- genes_aggr_clogit.df$p_clogit_wald
+wald_na_count <- sum(is.na(p_clogit_wald))
+wald_na_count
+wald_zero_count <- sum(p_clogit_wald==0, na.rm=TRUE)
+wald_zero_count
+p_clogit_wald <- p_clogit_wald[!is.na(p_clogit_wald)]
+p_clogit_wald <- p_clogit_wald[p_clogit_wald != 0]
+main <- paste("CBC vs UBC: matched, clogit wald\n", 
+              length(p_clogit_wald),"genes (",
+              wald_na_count, "NAs and",
+              wald_zero_count, "zeroes omitted)")
+qqunif.plot(p_clogit_wald, main=main)
+
+# Clean-up
+rm(lrt_na_count, lrt_zero_count, p_clogit_lrt, p_clogit_lrt_standard,
+   anova_na_count, anova_zero_count, p_clogit_anova, p_clogit_anova_standard,
+   wald_na_count, wald_zero_count, p_clogit_wald, p_clogit_wald_standard, 
+   main, qqunif.plot)
+
+```
+
+# data_summary
+
+```{r}
+
+dim(genotypes.mx)
+class(genotypes.mx)
+genotypes.mx[1:5,1:5]
+
+dim(genotypes_inv_imp_wt.mx)
+class(genotypes_inv_imp_wt.mx)
+genotypes_inv_imp_wt.mx[1:5,1:5]
+
+dim(genes_aggr_data.mx)
+class(genes_aggr_data.mx)
+genes_aggr_data.mx[1:5,1:5]
+
+dim(genes_aggr_info.df)
+str(genes_aggr_info.df)
+genes_aggr_info.df[1:5,1:5]
+
+dim(kgen.df)
+colnames(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+colnames(exac.df)
+exac.df[1:5,1:5]
+
+dim(variants.df)
+str(variants.df)
+variants.df[1:5,1:5]
+
+dim(phenotypes.df)
+str(phenotypes.df)
+phenotypes.df[1:5,1:5]
+
+dim(genes_aggr_clogit.df)
+str(genes_aggr_clogit.df)
+genes_aggr_clogit.df[1:5,1:5]
+
+# Check consistency of rownames and colnames
+sum(colnames(genotypes.mx) != rownames(phenotypes.df))
+sum(colnames(genes_aggr_data.mx) != rownames(phenotypes.df))
+
+sum(rownames(genes_aggr_info.df) != rownames(genes_aggr_data.mx))
+sum(rownames(genes_aggr_info.df) != rownames(genes_aggr_clogit.df))
+
+sum(rownames(genotypes.mx) != rownames(genotypes_inv_imp_wt.mx))
+sum(rownames(genotypes.mx) != rownames(kgen.df))
+sum(rownames(genotypes.mx) != rownames(exac.df))
+sum(rownames(genotypes.mx) != rownames(variants.df))
+
+```
+
+# save_data
+
+```{r save_data}
+
+save.image(paste(interim_data_folder, "r11a_clogit_wecare_only.RData", sep="/"))
+
+```
+
+# final_section
+
+```{r final_section}
+
+ls()
+sessionInfo()
+Sys.time()
+
+```

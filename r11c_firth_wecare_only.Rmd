@@ -1,0 +1,675 @@
+---
+title: "firth_analysis_wecare_only"
+output: html_document
+---
+
+started: Alexey Larionov, 27Feb2017  
+last updated: Alexey Larionov, 03May2017
+
+# Summary
+
+Firth analysis on SKAT-style weighted and aggregated data  
+
+- Read and check the data  
+- Perform Firth analysis on weighted and aggregated data with and without matched data
+- Write results into text file  
+- Compare different p-estimates  
+- Make QQ-plots  
+
+# start_section
+
+```{r start_section}
+
+# Start time
+Sys.time()
+
+# Folders
+base_folder="/analysis/mtgroup_share/users/alexey/wecare_only_stat_05.17"
+setwd(base_folder)
+scripts_folder <- "scripts"
+source_data_folder <- "source_data"
+interim_data_folder <- "interim_data"
+results_folder <- "results"
+
+# Required library
+library(logistf) # for Firth logistic regression
+
+# Accessory functions
+source(paste(scripts_folder, "f02_tryCatchAdv.R", sep="/")) # advanced error handling
+source(paste(scripts_folder, "f03_qqunif_plot.R", sep="/")) # simple qq-plots
+
+```
+
+# load_data
+
+```{r load_data}
+
+load(paste(interim_data_folder, "r10a_invert_impute_weight_aggregate_wecare_only.RData", sep="/"))
+
+```
+
+# check_data
+
+```{r check_data}
+
+ls()
+
+dim(genotypes.mx)
+class(genotypes.mx)
+genotypes.mx[1:5,1:5]
+
+dim(genotypes_inv_imp_wt.mx)
+class(genotypes_inv_imp_wt.mx)
+genotypes_inv_imp_wt.mx[1:5,1:5]
+
+dim(genes_aggr_data.mx)
+class(genes_aggr_data.mx)
+genes_aggr_data.mx[1:5,1:5]
+
+dim(genes_aggr_info.df)
+str(genes_aggr_info.df)
+genes_aggr_info.df[1:5,1:5]
+
+dim(kgen.df)
+colnames(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+colnames(exac.df)
+exac.df[1:5,1:5]
+
+dim(variants.df)
+str(variants.df)
+variants.df[1:5,1:5]
+
+dim(phenotypes.df)
+str(phenotypes.df)
+phenotypes.df[1:5,1:5]
+
+# Check consistency of rownames and colnames
+sum(colnames(genotypes.mx) != rownames(phenotypes.df))
+sum(colnames(genes_aggr_data.mx) != rownames(phenotypes.df))
+
+sum(rownames(genes_aggr_info.df) != rownames(genes_aggr_data.mx))
+
+sum(rownames(genotypes.mx) != rownames(genotypes_inv_imp_wt.mx))
+sum(rownames(genotypes.mx) != rownames(kgen.df))
+sum(rownames(genotypes.mx) != rownames(exac.df))
+sum(rownames(genotypes.mx) != rownames(variants.df))
+
+```
+
+# prepare_data_for_analysis
+
+Verifying that there is No missed data   
+
+```{r prepare_data_for_analysis}
+
+# Eigenvectors
+E <- as.matrix(phenotypes.df[,c("eig1", "eig2")])
+sum(is.na(E)) # 0
+
+# Matching information (to compare with clogit)
+M <- as.matrix(phenotypes.df[,c("age_dx", "rstime")])
+sum(is.na(M)) # 0
+
+# There is no significant diferences between cases and controls in age_dx
+mean(phenotypes.df[phenotypes.df$cc==1, "age_dx"])
+sd(phenotypes.df[phenotypes.df$cc==1, "age_dx"])
+mean(phenotypes.df[phenotypes.df$cc==0, "age_dx"])
+sd(phenotypes.df[phenotypes.df$cc==0, "age_dx"])
+t.test(phenotypes.df[phenotypes.df$cc==1, "age_dx"], 
+       phenotypes.df[phenotypes.df$cc==0, "age_dx"])
+
+# There is no significant diferences between cases and controls in rstime
+mean(phenotypes.df[phenotypes.df$cc==1, "rstime"])
+sd(phenotypes.df[phenotypes.df$cc==1, "rstime"])
+mean(phenotypes.df[phenotypes.df$cc==0, "rstime"])
+sd(phenotypes.df[phenotypes.df$cc==0, "rstime"])
+t.test(phenotypes.df[phenotypes.df$cc==1, "rstime"], 
+       phenotypes.df[phenotypes.df$cc==0, "rstime"])
+
+# Make a variable for hormone treatment.
+hormone <- phenotypes.df$hormone
+
+# Make variable for cytotoxic treatment
+chemo <- phenotypes.df$chemo_cat != "no"
+
+# Make joined treatment variable
+treatment <- as.integer(chemo | hormone)
+sum(is.na(treatment))
+
+# Number of pregnancies
+num_preg <- as.integer(phenotypes.df$num_preg)
+sum(is.na(num_preg))
+
+# Bind clinical covariates together
+C <- cbind(treatment, num_preg)
+
+# Outcomes
+Y <- phenotypes.df$cc
+sum(is.na(Y))
+
+# Clean-up
+rm(chemo, hormone, treatment, num_preg)
+
+```
+
+# run_firth_logit_regression
+
+This chunk runs Firth logit regression without matching data  
+
+Using advanced error handling (see tryCatchAdv function)  
+Noteworthy, logistf() generates no warnings or errors,  
+so the error handling could be omitted...  
+
+~ 10 min  
+
+```{r run_firth_logit_regression}
+
+# Get list of genes (get rid of NAs !)
+genes <- unique(as.character(variants.df$SYMBOL))
+length(genes)
+sum(is.na(genes))
+
+# Prepare output matrix
+header <- c("gene", "p_firth_anova", "p_firth_pl", 
+            "firth_status", "firth_message", 
+            "firth_null_status", "firth_null_message")
+
+firth.mx <- matrix(nrow=0, ncol=length(header))
+header -> colnames(firth.mx)  
+
+# For each gene
+for(gene in genes){
+  
+  #gene="ATM"
+  
+  # Get explanatory vector  
+  X <- genes_aggr_data.mx[gene,]
+  
+  # Try firth logit with advanced warnings/errors handling
+  firth_reg <- tryCatchAdv(logistf(Y ~ X + E + C))
+  firth_reg_null <- tryCatchAdv(logistf(Y ~ E + C))
+  
+  # Extract data and error/warning messages 
+  # from tryCatchAdv() object for firth_reg
+  firth_status <- firth_reg$status
+  
+  if(firth_status == "succeeded"){
+    firth_reg <- firth_reg$value
+    firth_message <- NA
+  }
+
+  if(firth_status == "warning"){
+    firth_reg <- firth_reg$value
+    firth_message <- firth_reg$message$message
+  }
+
+  if(firth_status == "error"){
+    firth_reg <- NA
+    firth_message <- firth_reg$message$message
+  }
+  
+  # Extract data and error/warning messages 
+  # from tryCatchAdv() object for firth_reg_null
+  firth_null_status <- firth_reg_null$status
+  
+  if(firth_null_status == "succeeded"){
+    firth_reg_null <- firth_reg_null$value
+    firth_null_message <- NA
+  }
+
+  if(firth_null_status == "warning"){
+    firth_reg_null <- firth_reg_null$value
+    firth_null_message <- firth_reg_null$message$message
+  }
+
+  if(firth_null_status == "error"){
+    firth_reg_null <- NA
+    firth_null_message <- firth_reg_null$message$message
+  }
+
+  # Calculate p-estimates
+  if(firth_status == "error" | firth_null_status == "error"){
+    
+    # Do not calculate if full or null model failed 
+    p_firth_anova <- NA
+    p_firth_pl <- NA
+    
+  }else{
+    
+    # Calculate p-estimate using anova.firth
+    firth_anova <- anova(firth_reg, firth_reg_null, method ="PLR")
+    p_firth_anova <- firth_anova$pval
+  
+    # Get pl p-estimate
+    p_firth_pl <- firth_reg$prob["X"]
+
+    # Can not calculate LRT p-estimate below
+    # Error: no applicable method for 'logLik' applied to an object of class "logistf"
+    # chi_stat_lrt = 2*(logLik(firth_reg) - logLik(firth_reg_null))
+    # p_firth_lrt = 1 - pchisq(chi_stat_lrt, df=1)
+    
+    # Clean-up
+    rm(firth_anova)
+  
+  }
+  
+  # Compile result
+  result <- c(gene, p_firth_anova, p_firth_pl, 
+              firth_status, firth_message, 
+              firth_null_status, firth_null_message)
+  
+  # Add result to output table
+  firth.mx <- rbind(firth.mx, result)
+
+  # Clean-up
+  rm(firth_reg, firth_reg_null, 
+     p_firth_anova, p_firth_pl, 
+     firth_status, firth_message, 
+     firth_null_status, firth_null_message, 
+     result)
+  
+}
+
+# Add rownames
+genes -> rownames(firth.mx)
+
+# Check the result
+dim(firth.mx)
+
+# Convert to data frame and update data types
+genes_aggr_firth.df <- as.data.frame(firth.mx)
+genes_aggr_firth.df$gene <- as.vector(genes_aggr_firth.df$gene)
+genes_aggr_firth.df$p_firth_anova <- as.numeric(as.vector(genes_aggr_firth.df$p_firth_anova))
+genes_aggr_firth.df$p_firth_pl <- as.numeric(as.vector(genes_aggr_firth.df$p_firth_pl))
+str(genes_aggr_firth.df)
+
+# Explore results
+summary(genes_aggr_firth.df$firth_status)
+summary(genes_aggr_firth.df$firth_message)
+
+summary(genes_aggr_firth.df$firth_null_status)
+summary(genes_aggr_firth.df$firth_null_message)
+
+summary(genes_aggr_firth.df$p_firth_anova)
+summary(genes_aggr_firth.df$p_firth_pl)
+
+# Write result to file
+output_file <- paste(results_folder, "r11c_firth_wecare_only.txt", sep="/")
+write.table(genes_aggr_firth.df, file=output_file, quote=FALSE, sep="\t")
+
+# Clean-up
+rm(gene, genes, output_file, header, firth.mx)
+
+```
+
+# run_firth_M_logit_regression
+
+Equivalent to the previous chunk, except for adding matching info to the models  
+
+```{r run_firth_M_logit_regression}
+
+# Get list of genes (get rid of NAs if any!)
+genes <- unique(as.character(variants.df$SYMBOL))
+length(genes)
+sum(is.na(genes))
+
+# Prepare output matrix
+header <- c("gene", "p_firth_anova", "p_firth_pl", 
+            "firth_status", "firth_message", 
+            "firth_null_status", "firth_null_message")
+
+firth.mx <- matrix(nrow=0, ncol=length(header))
+header -> colnames(firth.mx)  
+
+# For each gene
+for(gene in genes){
+  
+  # Get explanatory vector  
+  X <- genes_aggr_data.mx[gene,]
+  
+  # Try firth logit with advanced warnings/errors handling
+  firth_reg <- tryCatchAdv(logistf(Y ~ X + E + C + M))
+  firth_reg_null <- tryCatchAdv(logistf(Y ~ E + C + M))
+  
+  # Extract data and error/warning messages 
+  # from tryCatchAdv() object for firth_reg
+  firth_status <- firth_reg$status
+  
+  if(firth_status == "succeeded"){
+    firth_reg <- firth_reg$value
+    firth_message <- NA
+  }
+
+  if(firth_status == "warning"){
+    firth_reg <- firth_reg$value
+    firth_message <- firth_reg$message$message
+  }
+
+  if(firth_status == "error"){
+    firth_reg <- NA
+    firth_message <- firth_reg$message$message
+  }
+  
+  # Extract data and error/warning messages 
+  # from tryCatchAdv() object for firth_reg_null
+  firth_null_status <- firth_reg_null$status
+  
+  if(firth_null_status == "succeeded"){
+    firth_reg_null <- firth_reg_null$value
+    firth_null_message <- NA
+  }
+
+  if(firth_null_status == "warning"){
+    firth_reg_null <- firth_reg_null$value
+    firth_null_message <- firth_reg_null$message$message
+  }
+
+  if(firth_null_status == "error"){
+    firth_reg_null <- NA
+    firth_null_message <- firth_reg_null$message$message
+  }
+
+  # Calculate p-estimates
+  if(firth_status == "error" | firth_null_status == "error"){
+    
+    # Do not calculate if full or null model failed 
+    p_firth_anova <- NA
+    p_firth_pl <- NA
+    
+  }else{
+    
+    # Calculate p-estimate using anova.firth
+    firth_anova <- anova(firth_reg, firth_reg_null, method ="PLR")
+    p_firth_anova <- firth_anova$pval
+  
+    # Get pl p-estimate
+    p_firth_pl <- firth_reg$prob["X"]
+    
+    # Clean-up
+    rm(firth_anova)
+  
+  }
+  
+  # Compile result
+  result <- c(gene, p_firth_anova, p_firth_pl, 
+              firth_status, firth_message, 
+              firth_null_status, firth_null_message)
+  
+  # Add result to output table
+  firth.mx <- rbind(firth.mx, result)
+
+  # Clean-up
+  rm(firth_reg, firth_reg_null, 
+     p_firth_anova, p_firth_pl, 
+     firth_status, firth_message, 
+     firth_null_status, firth_null_message, 
+     result)
+  
+}
+
+# Add rownames
+genes -> rownames(firth.mx)
+
+# Check the result
+dim(firth.mx)
+
+# Convert to data frame and update data types
+genes_aggr_firth_M.df <- as.data.frame(firth.mx)
+genes_aggr_firth_M.df$gene <- as.vector(genes_aggr_firth_M.df$gene)
+genes_aggr_firth_M.df$p_firth_anova <- as.numeric(as.vector(genes_aggr_firth_M.df$p_firth_anova))
+genes_aggr_firth_M.df$p_firth_pl <- as.numeric(as.vector(genes_aggr_firth_M.df$p_firth_pl))
+str(genes_aggr_firth_M.df)
+
+# Explore results
+summary(genes_aggr_firth_M.df$firth_status)
+summary(genes_aggr_firth_M.df$firth_message)
+
+summary(genes_aggr_firth_M.df$firth_null_status)
+summary(genes_aggr_firth_M.df$firth_null_message)
+
+summary(genes_aggr_firth_M.df$p_firth_anova)
+summary(genes_aggr_firth_M.df$p_firth_pl)
+
+# Write result to file
+output_file <- paste(results_folder, "r11c_firth_M_wecare_only.txt", sep="/")
+write.table(genes_aggr_firth_M.df, file=output_file, quote=FALSE, sep="\t")
+
+# Clean-up
+rm(X, Y, E, C, M, gene, genes, output_file, header, firth.mx, tryCatchAdv)
+
+```
+
+# compare_firth_p_estimates
+
+```{r compare_firth_p_estimates}
+
+# Get p-values
+
+p_firth_anova <- genes_aggr_firth.df$p_firth_anova
+sum(!is.na(p_firth_anova))
+
+p_firth_pl <- genes_aggr_firth.df$p_firth_pl
+sum(!is.na(p_firth_pl))
+
+# Make plots
+
+main=paste("Firth anova vs pl\nall",sum(!is.na(p_firth_anova)),"genes")
+plot(p_firth_anova,p_firth_pl, main=main)
+
+main=paste("Firth anova vs pl (log10 scale)\nall",sum(!is.na(p_firth_anova)),"genes")
+plot(log(p_firth_anova, 10),log(p_firth_pl, 10), main=main)
+
+# Clean-up
+
+rm(p_firth_anova, p_firth_pl, main)
+
+```
+
+# compare_firth_M_p_estimates
+
+```{r compare_firth_M_p_estimates}
+
+# Get p-values
+
+p_firth_M_anova <- genes_aggr_firth_M.df$p_firth_anova
+sum(!is.na(p_firth_M_anova))
+
+p_firth_M_pl <- genes_aggr_firth_M.df$p_firth_pl
+sum(!is.na(p_firth_M_pl))
+
+# Make plots
+
+main=paste("Firth M anova vs pl\nall",sum(!is.na(p_firth_M_anova)),"genes")
+plot(p_firth_M_anova,p_firth_M_pl, main=main)
+
+main=paste("Firth M anova vs pl (log10 scale)\nall",sum(!is.na(p_firth_M_anova)),"genes")
+plot(log(p_firth_M_anova, 10),log(p_firth_M_pl, 10), main=main)
+
+# Clean-up
+
+rm(p_firth_M_anova, p_firth_M_pl, main)
+
+```
+
+# compare_firth_with_and_without_M
+
+```{r compare_firth_with_and_without_M}
+
+# Get p-values
+
+p_firth_anova <- genes_aggr_firth.df$p_firth_anova
+sum(!is.na(p_firth_anova))
+
+p_firth_M_anova <- genes_aggr_firth_M.df$p_firth_anova
+sum(!is.na(p_firth_M_anova))
+
+# Draw plots
+
+main=paste("Firth anova with and without M\nall",sum(!is.na(p_firth_anova)),"genes")
+plot(p_firth_anova,p_firth_M_anova, main=main)
+
+main=paste("Firth anova with and without M (log10 scale)\nall",sum(!is.na(p_firth_anova)),"genes")
+plot(log(p_firth_anova, 10),log(p_firth_M_anova, 10), main=main)
+
+# Clean-up
+rm(p_firth_anova, p_firth_M_anova, main)
+
+```
+
+# firth_qq_plots
+
+```{r firth_qq_plots}
+
+# anova
+p_firth_anova <- genes_aggr_firth.df$p_firth_anova
+anova_na_count <- sum(is.na(p_firth_anova))
+anova_na_count
+anova_zero_count <- sum(p_firth_anova==0, na.rm=TRUE)
+anova_zero_count
+p_firth_anova <- p_firth_anova[!is.na(p_firth_anova)]
+p_firth_anova <- p_firth_anova[p_firth_anova != 0]
+main <- paste("CBC vs UBC, Firth anova\n", 
+              length(p_firth_anova),"genes (",
+              anova_na_count, "NAs and",
+              anova_zero_count, "zeroes omitted)")
+qqunif.plot(p_firth_anova, main=main)
+
+# pl
+p_firth_pl <- genes_aggr_firth.df$p_firth_pl
+pl_na_count <- sum(is.na(p_firth_pl))
+pl_na_count
+pl_zero_count <- sum(p_firth_pl==0, na.rm=TRUE)
+pl_zero_count
+p_firth_pl <- p_firth_pl[!is.na(p_firth_pl)]
+p_firth_pl <- p_firth_pl[p_firth_pl != 0]
+main <- paste("CBC vs UBC: Firth pl\n", 
+              length(p_firth_pl),"genes (",
+              pl_na_count, "NAs and",
+              pl_zero_count, "zeroes omitted)")
+qqunif.plot(p_firth_pl, main=main)
+
+# Clean-up
+rm(anova_na_count, anova_zero_count, p_firth_anova, 
+   pl_na_count, pl_zero_count, p_firth_pl, 
+   main)
+
+```
+
+# firth_M_qq_plots
+
+```{r firth_M_qq_plots}
+
+# anova
+p_firth_anova <- genes_aggr_firth_M.df$p_firth_anova
+anova_na_count <- sum(is.na(p_firth_anova))
+anova_na_count
+anova_zero_count <- sum(p_firth_anova==0, na.rm=TRUE)
+anova_zero_count
+p_firth_anova <- p_firth_anova[!is.na(p_firth_anova)]
+p_firth_anova <- p_firth_anova[p_firth_anova != 0]
+main <- paste("CBC vs UBC: Firth M anova\n", 
+              length(p_firth_anova),"genes (",
+              anova_na_count, "NAs and",
+              anova_zero_count, "zeroes omitted)")
+qqunif.plot(p_firth_anova, main=main)
+
+# pl
+p_firth_pl <- genes_aggr_firth_M.df$p_firth_pl
+pl_na_count <- sum(is.na(p_firth_pl))
+pl_na_count
+pl_zero_count <- sum(p_firth_pl==0, na.rm=TRUE)
+pl_zero_count
+p_firth_pl <- p_firth_pl[!is.na(p_firth_pl)]
+p_firth_pl <- p_firth_pl[p_firth_pl != 0]
+main <- paste("CBC vs UBC: Firth M pl\n", 
+              length(p_firth_pl),"genes (",
+              pl_na_count, "NAs and",
+              pl_zero_count, "zeroes omitted)")
+qqunif.plot(p_firth_pl, main=main)
+
+# Clean-up
+rm(anova_na_count, anova_zero_count, p_firth_anova, 
+   pl_na_count, pl_zero_count, p_firth_pl, 
+   main, qqunif.plot)
+
+```
+
+# data_summary
+
+```{r data_summary}
+
+dim(genotypes.mx)
+class(genotypes.mx)
+genotypes.mx[1:5,1:5]
+
+dim(genotypes_inv_imp_wt.mx)
+class(genotypes_inv_imp_wt.mx)
+genotypes_inv_imp_wt.mx[1:5,1:5]
+
+dim(genes_aggr_data.mx)
+class(genes_aggr_data.mx)
+genes_aggr_data.mx[1:5,1:5]
+
+dim(genes_aggr_info.df)
+str(genes_aggr_info.df)
+genes_aggr_info.df[1:5,1:5]
+
+dim(kgen.df)
+colnames(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+colnames(exac.df)
+exac.df[1:5,1:5]
+
+dim(variants.df)
+str(variants.df)
+variants.df[1:5,1:5]
+
+dim(phenotypes.df)
+str(phenotypes.df)
+phenotypes.df[1:5,1:5]
+
+dim(genes_aggr_firth.df)
+str(genes_aggr_firth.df)
+genes_aggr_firth.df[1:5,1:5]
+
+dim(genes_aggr_firth_M.df)
+str(genes_aggr_firth_M.df)
+genes_aggr_firth_M.df[1:5,1:5]
+
+# Check consistency of rownames and colnames
+sum(colnames(genotypes.mx) != rownames(phenotypes.df))
+sum(colnames(genes_aggr_data.mx) != rownames(phenotypes.df))
+
+sum(rownames(genes_aggr_info.df) != rownames(genes_aggr_data.mx))
+sum(rownames(genes_aggr_info.df) != rownames(genes_aggr_firth.df))
+sum(rownames(genes_aggr_info.df) != rownames(genes_aggr_firth_M.df))
+
+sum(rownames(genotypes.mx) != rownames(genotypes_inv_imp_wt.mx))
+sum(rownames(genotypes.mx) != rownames(kgen.df))
+sum(rownames(genotypes.mx) != rownames(exac.df))
+sum(rownames(genotypes.mx) != rownames(variants.df))
+
+```
+
+# save_data
+
+```{r save_data}
+
+save.image(paste(interim_data_folder, "r11c_firth_wecare_only.RData", sep="/"))
+
+```
+
+# final_section
+
+```{r final_section}
+
+ls()
+sessionInfo()
+Sys.time()
+
+```

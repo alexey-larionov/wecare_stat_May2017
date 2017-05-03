@@ -1,0 +1,476 @@
+---
+title: "pick_eigenvectors_exclude_outliers"
+output: html_document
+---
+
+started: Alexey Larionov, 16Feb2017  
+last updated: Alexey Larionov, 03May2017
+
+# Summary
+
+- Add 5 wes eigenvectors to phenotypes table  
+
+- Exclude ethinic outliers: P5_E09 and P6_D05  
+  (detected with kgen50 and wecare only eigenvectors)  
+
+- Export the final phenotype table  
+
+- Recalculate allelic frequencies  
+
+Input data: 246,232 vars x 480 cases (245 UBC and 235 CBC)  
+Output data: 244,502 vars x 478 cases (245 UBC and 233 CBC)  
+of them:  
+- 83 CBC-Fam  
+- 150 CBC-noFam  
+- 71 UBC-Fam  
+- 174 UBC-noFam  
+- 225 matched CBC-UBC pairs  
+
+# start_section
+
+```{r start_section}
+
+# Time stamp
+Sys.time()
+
+# Folders
+base_folder="/analysis/mtgroup_share/users/alexey/wecare_only_stat_05.17"
+setwd(base_folder)
+scripts_folder <- "scripts"
+source_data_folder <- "source_data"
+interim_data_folder <- "interim_data"
+results_folder <- "results"
+
+```
+
+# load_wecare_only_eigenvectors
+
+```{r read_wecare_only_eigenvectors}
+
+load(paste(interim_data_folder, "r05_calculate_egenvectors_wecare_only.RData", sep="/"))
+
+```
+
+# check_data
+
+```{r check_data}
+
+ls()
+
+dim(genotypes.mx)
+class(genotypes.mx)
+genotypes.mx[1:5,1:5]
+
+dim(phenotypes.df)
+str(phenotypes.df)
+phenotypes.df[1:5,1:5]
+
+dim(variants.df)
+colnames(variants.df)
+variants.df[1:5,1:5]
+
+dim(kgen.df)
+colnames(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+colnames(exac.df)
+exac.df[1:5,1:5]
+
+str(wecare.eigen)
+
+sum(colnames(genotypes.mx) != rownames(phenotypes.df))
+
+sum(rownames(genotypes.mx) != rownames(variants.df))
+sum(rownames(genotypes.mx) != rownames(kgen.df))
+sum(rownames(genotypes.mx) != rownames(exac.df))
+
+```
+
+# add_wecare_only_eigenvectors_to_phenotypes_table
+
+```{r add_wecare_only_eigenvectors_to_phenotypes_table}
+
+# Update eigen object
+dim(wecare.eigen$vectors)
+dim(phenotypes.df)
+phenotypes.df$wes_id -> rownames(wecare.eigen$vectors) 
+paste("eig", 1:ncol(wecare.eigen$vectors), sep ="") -> colnames(wecare.eigen$vectors) 
+wecare.eigen$vectors[1:5,1:5]
+
+# Add columns to phenotypes table
+phenotypes.df <- cbind(phenotypes.df, wecare.eigen$vectors[,1:5])
+dim(phenotypes.df)
+str(phenotypes.df)
+
+```
+
+# make_final_phenotypes_file
+
+Flag eigenvectors outliers  
+P6_D05, P5_E09 - selected earlier by kgen50 eigenvectors  
+Could be done easier with dplyr::join  
+
+```{r make_final_phenotypes_file}
+
+# List of eigenvectors outliers
+eig_outliers=c("P6_D05", "P5_E09")
+
+# Read previous phenotype file (w/o new outliers and eigenvectors)
+wecare_wes_phenotypes.df <- read.table(paste(interim_data_folder, "wecare_phenotypes_interim.txt", sep="/"), 
+                            header = TRUE, quote="", sep="\t")
+
+wecare_wes_phenotypes.df[1:5,1:5] # already has rownames
+
+# Prepare matrix for eigenvectors to add
+cols_2add <- c("eig1_wecare", "eig2_wecare", "eig3_wecare", "eig4_wecare", "eig5_wecare")
+eigs_2add.mx <- matrix(as.numeric(rep(NA,nrow(wecare_wes_phenotypes.df)*5)), ncol=5)
+colnames(eigs_2add.mx) <- cols_2add
+rownames(eigs_2add.mx) <- rownames(wecare_wes_phenotypes.df)
+
+overlapped_cases <- intersect(rownames(phenotypes.df), rownames(eigs_2add.mx))
+length(overlapped_cases) # 480
+
+for(id in overlapped_cases){
+  eigs_2add.mx[id, "eig1_wecare"] <- phenotypes.df[id, "eig1"]
+  eigs_2add.mx[id, "eig2_wecare"] <- phenotypes.df[id, "eig2"]
+  eigs_2add.mx[id, "eig3_wecare"] <- phenotypes.df[id, "eig3"]
+  eigs_2add.mx[id, "eig4_wecare"] <- phenotypes.df[id, "eig4"]
+  eigs_2add.mx[id, "eig5_wecare"] <- phenotypes.df[id, "eig5"]
+}
+
+# Add the new eigenvectors to the phenotype file
+wecare_wes_phenotypes.df <- cbind(wecare_wes_phenotypes.df, eigs_2add.mx)
+
+# Add eigenvectors outliers
+wecare_wes_phenotypes.df$filter <- as.character(as.vector(wecare_wes_phenotypes.df$filter))
+"eigenvectors_outlier" -> wecare_wes_phenotypes.df[eig_outliers,"filter"]
+
+# Write down the updated phenotype file
+write.table(wecare_wes_phenotypes.df, file=paste(results_folder, "r07_wecare_phenotypes.txt", sep="/"), quote=FALSE, sep="\t")
+
+# Clean-up
+rm(eig_outliers, id, cols_2add, eigs_2add.mx, wecare_wes_phenotypes.df, overlapped_cases)
+
+```
+
+# remove_wes_eigenvectors_outliers
+
+Remove 2 cases: 480 wecare (245 UBC + 235 CBC) -> 478 wecare (245 UBC + 233 CBC)  
+
+Excluding P6_D05, P5_E09  
+Selected earlier by kgen50 and wecare eigenvectors  
+
+```{r remove_wes_eigenvectors_outliers}
+
+# Flag outliers
+eig_outliers=c("P6_D05", "P5_E09")
+"eigenvectors_outlier" -> 
+  phenotypes.df[phenotypes.df$wes_id %in% eig_outliers,"filter"]
+
+# Count outliers
+outliers <- phenotypes.df$filter == "eigenvectors_outlier"
+sum(outliers)
+
+# Remove outliers
+phenotypes.df <- phenotypes.df[!outliers,]
+genotypes.mx <- genotypes.mx[,!outliers]
+
+dim(phenotypes.df)
+dim(genotypes.mx)
+
+# Clean-up
+rm(eig_outliers, outliers)
+
+```
+
+# remove_variants_with_uniform_genotypes_accross_all_samples
+Remove 1,730 variants: 246,232 -> 244,502
+
+```{r remove_variants_with_uniform_genotypes_accross_all_samples}
+
+# Check that there is no all-NA variants
+non_NA_count.udf <- function(x){sum(!is.na(x))}
+all_NA <- apply(genotypes.mx, 1, non_NA_count.udf) == 0
+sum(all_NA) # 0
+
+# Function to detect uniform numeric vector
+uniform_vector.udf <- function(x){
+  if(min(x, na.rm=TRUE) == max(x, na.rm=TRUE)){return(TRUE)} else {return(FALSE)}}
+
+# Variants with uniform genotypes accross all samples 
+uniform_genotypes <- apply(genotypes.mx, 1, uniform_vector.udf)
+summary(uniform_genotypes)
+sum(uniform_genotypes) # 1,730
+
+# Remove variants with uniform genotypes accross all samples
+genotypes.mx <- genotypes.mx[!uniform_genotypes,]
+dim(genotypes.mx) # 244,502    478
+genotypes.mx[1:5,1:5]
+
+variants.df <- variants.df[!uniform_genotypes,]
+dim(variants.df) # 244,502     32
+variants.df[1:5,1:5]
+
+kgen.df <- kgen.df[!uniform_genotypes,]
+dim(kgen.df) # 244,502      9
+kgen.df[1:5,1:5]
+
+exac.df <- exac.df[!uniform_genotypes,]
+dim(exac.df) # 244,502     48
+exac.df[1:5,1:5]
+
+# Clean-up
+rm(non_NA_count.udf, all_NA, uniform_vector.udf, uniform_genotypes)
+
+```
+
+# explore_remaining_cases
+
+233 CBC, 245 UBC, 198 NFE
+225 matched pairs
+
+```{r explore_remaining_cases}
+
+# Numbers of cases and controls
+summary(as.factor(phenotypes.df$cc))
+# -1   0   1 
+#198 245 233 
+
+# Number of matched pairs
+sum(table(phenotypes.df$setno)==2) # 225
+
+```
+
+# calculate_total_AFs
+
+```{r calculate_total_AFs}
+
+# Function to count alleles (2x for diploid)
+get_allele_number.udf <- function(x){2*sum(!is.na(x))}
+
+# Calculate new AFs
+ac_all <- apply(genotypes.mx, 1, sum, na.rm=TRUE)
+an_all <- apply(genotypes.mx, 1, get_allele_number.udf)
+af_all <- ac_all/an_all
+
+# Ceck new AFs 
+# (note that uniform variants were excluded)
+ac_all[1:10]
+an_all[1:10]
+af_all[1:10]
+
+min(ac_all)
+min(an_all)
+min(af_all)
+
+max(ac_all)
+max(an_all)
+max(af_all)
+
+# Add new AFs to the variants table
+variants.df$ac_all <- ac_all
+variants.df$an_all <- an_all
+variants.df$af_all <- af_all
+
+# Clean-up()
+rm(ac_all, an_all, af_all)
+
+```
+
+# calculate_ubc_AFs
+
+```{r calculate_ubc_AFs}
+
+# Prepare genotypes table
+ubc_cases <- phenotypes.df$cc == 0 
+sum(ubc_cases) # 245
+ubc_genotypes.mx <- genotypes.mx[,ubc_cases]
+dim(ubc_genotypes.mx)
+
+# Calculate ubc ac, an and af
+ac_ubc <- apply(ubc_genotypes.mx, 1, sum, na.rm=TRUE)
+an_ubc <- apply(ubc_genotypes.mx, 1, get_allele_number.udf)
+af_ubc <- ac_ubc/an_ubc
+
+# Add new AFs to the variants table
+variants.df$ac_ubc <- ac_ubc
+variants.df$an_ubc <- an_ubc
+variants.df$af_ubc <- af_ubc
+
+# Clean-up
+rm(ubc_cases, ubc_genotypes.mx, ac_ubc, an_ubc, af_ubc)
+
+```
+
+# calculate_cbc_AFs
+
+```{r calculate_cbc_AFs}
+
+# Prepare genotypes table
+cbc_cases <- phenotypes.df$cc == 1 
+sum(cbc_cases) # 233
+cbc_genotypes.mx <- genotypes.mx[,cbc_cases]
+dim(cbc_genotypes.mx)
+
+# Calculate cbc ac, an and af
+ac_cbc <- apply(cbc_genotypes.mx, 1, sum, na.rm=TRUE)
+an_cbc <- apply(cbc_genotypes.mx, 1, get_allele_number.udf)
+af_cbc <- ac_cbc/an_cbc
+
+# Add new AFs to the variants table
+variants.df$ac_cbc <- ac_cbc
+variants.df$an_cbc <- an_cbc
+variants.df$af_cbc <- af_cbc
+
+# Clean-up
+rm(cbc_cases, cbc_genotypes.mx, ac_cbc, an_cbc, af_cbc)
+
+```
+
+# calculate_ubc_fam_AFs
+
+```{r calculate_ubc_fam_AFs}
+
+# Prepare genotypes table
+ubc_fam_cases <- phenotypes.df$cc == 0 & phenotypes.df$family_history == 1
+sum(ubc_fam_cases) # 71
+ubc_fam_genotypes.mx <- genotypes.mx[,ubc_fam_cases]
+dim(ubc_fam_genotypes.mx)
+
+# Calculate ubc_fam ac, an and af
+ac_ubc_fam <- apply(ubc_fam_genotypes.mx, 1, sum, na.rm=TRUE)
+an_ubc_fam <- apply(ubc_fam_genotypes.mx, 1, get_allele_number.udf)
+af_ubc_fam <- ac_ubc_fam/an_ubc_fam
+
+# Add updated AFs to variants.df
+variants.df <- cbind(variants.df, ac_ubc_fam, an_ubc_fam, af_ubc_fam)
+
+# Clean-up
+rm(ubc_fam_cases, ubc_fam_genotypes.mx, ac_ubc_fam, an_ubc_fam, af_ubc_fam)
+
+```
+
+# calculate_ubc_nofam_AFs
+
+```{r calculate_ubc_nofam_AFs}
+
+# Prepare genotypes table
+ubc_nofam_cases <- phenotypes.df$cc == 0 & phenotypes.df$family_history == 0
+sum(ubc_nofam_cases) # 174
+ubc_nofam_genotypes.mx <- genotypes.mx[,ubc_nofam_cases]
+dim(ubc_nofam_genotypes.mx)
+
+# Calculate ubc_nofam ac, an and af
+ac_ubc_nofam <- apply(ubc_nofam_genotypes.mx, 1, sum, na.rm=TRUE)
+an_ubc_nofam <- apply(ubc_nofam_genotypes.mx, 1, get_allele_number.udf)
+af_ubc_nofam <- ac_ubc_nofam/an_ubc_nofam
+
+# Add updated AFs to variants.df
+variants.df <- cbind(variants.df, ac_ubc_nofam, an_ubc_nofam, af_ubc_nofam)
+
+# Clean-up
+rm(ubc_nofam_cases, ubc_nofam_genotypes.mx, ac_ubc_nofam, an_ubc_nofam, af_ubc_nofam)
+
+```
+
+# calculate_cbc_fam_AFs
+
+```{r calculate_cbc_fam_AFs}
+
+# Prepare genotypes table
+cbc_fam_cases <- phenotypes.df$cc == 1 & phenotypes.df$family_history == 1
+sum(cbc_fam_cases) # 83
+cbc_fam_genotypes.mx <- genotypes.mx[,cbc_fam_cases]
+dim(cbc_fam_genotypes.mx)
+
+# Calculate cbc_fam ac, an and af
+ac_cbc_fam <- apply(cbc_fam_genotypes.mx, 1, sum, na.rm=TRUE)
+an_cbc_fam <- apply(cbc_fam_genotypes.mx, 1, get_allele_number.udf)
+af_cbc_fam <- ac_cbc_fam/an_cbc_fam
+
+# Add updated AFs to variants.df
+variants.df <- cbind(variants.df, ac_cbc_fam, an_cbc_fam, af_cbc_fam)
+
+# Clean-up
+rm(cbc_fam_cases, cbc_fam_genotypes.mx, ac_cbc_fam, an_cbc_fam, af_cbc_fam)
+
+```
+
+# calculate_cbc_nofam_AFs
+
+```{r calculate_cbc_nofam_AFs}
+
+# Prepare genotypes table
+cbc_nofam_cases <- phenotypes.df$cc == 1 & phenotypes.df$family_history == 0
+sum(cbc_nofam_cases) # 150
+cbc_nofam_genotypes.mx <- genotypes.mx[,cbc_nofam_cases]
+dim(cbc_nofam_genotypes.mx)
+
+# Calculate cbc_nofam ac, an and af
+ac_cbc_nofam <- apply(cbc_nofam_genotypes.mx, 1, sum, na.rm=TRUE)
+an_cbc_nofam <- apply(cbc_nofam_genotypes.mx, 1, get_allele_number.udf)
+af_cbc_nofam <- ac_cbc_nofam/an_cbc_nofam
+
+# Add updated AFs to variants.df
+variants.df <- cbind(variants.df, ac_cbc_nofam, an_cbc_nofam, af_cbc_nofam)
+
+# Clean-up
+rm(cbc_nofam_cases, cbc_nofam_genotypes.mx, ac_cbc_nofam, 
+   an_cbc_nofam, af_cbc_nofam, get_allele_number.udf)
+
+```
+
+# data_summary
+
+```{r data_summary}
+
+ls()
+
+dim(genotypes.mx)
+class(genotypes.mx)
+genotypes.mx[1:5,1:5]
+
+dim(phenotypes.df)
+str(phenotypes.df)
+phenotypes.df[1:5,1:5]
+
+dim(variants.df)
+colnames(variants.df)
+variants.df[1:5,1:5]
+
+dim(kgen.df)
+colnames(kgen.df)
+kgen.df[1:5,1:5]
+
+dim(exac.df)
+colnames(exac.df)
+exac.df[1:5,1:5]
+
+sum(rownames(genotypes.mx) != rownames(variants.df))
+sum(rownames(genotypes.mx) != rownames(kgen.df))
+sum(rownames(genotypes.mx) != rownames(exac.df))
+
+sum(colnames(genotypes.mx) != rownames(phenotypes.df))
+
+rm(wecare.eigen) # its out of sink with data, after removal of outliers
+
+```
+
+# save_data
+
+```{r save_data}
+
+save.image(paste(interim_data_folder, "r07_pick_egenvectors_exclude_outliers_wecare_only.RData", sep="/"))
+
+```
+
+# final_section
+
+```{r final_section}
+
+ls()
+sessionInfo()
+Sys.time()
+
+```
